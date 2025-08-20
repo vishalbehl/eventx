@@ -1,0 +1,7 @@
+{
+  "dbHost": "localhost",
+  "dbPort": 5432,
+  "dbUser": "postgres",
+  "dbPassword": "1234",
+  "dbDatabase": "kiosk_local_db"
+}
