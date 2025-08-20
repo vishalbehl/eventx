@@ -67,8 +67,8 @@ const ServerDbSetup = ({ onSetupComplete, onGoBack }) => {
               setPort(e.target.value === 'mysql' ? 3306 : 5432);
             }}
           >
-            <MenuItem value="mysql">MySQL</MenuItem>
             <MenuItem value="postgres">PostgreSQL</MenuItem>
+            <MenuItem value="mysql">MySQL</MenuItem>
           </Select>
         </FormControl>
 
@@ -78,17 +78,10 @@ const ServerDbSetup = ({ onSetupComplete, onGoBack }) => {
         <TextField label="Username" value={user} onChange={(e) => setUser(e.target.value)} fullWidth />
         <TextField label="Password" type="password" value={password} onChange={(e) => setPassword(e.target.value)} fullWidth />
 
-        <Button
-          variant="outlined"
-          color="secondary"
-          onClick={onGoBack}
-        >
-          Back
-        </Button>
-
         <Button variant="contained" color="primary" onClick={handleCreateDb} disabled={loading}>
           {loading ? <CircularProgress size={24} /> : 'Create Database & Tables'}
         </Button>
+        <Button variant="outlined" color="secondary" onClick={onGoBack}> Back </Button>
       </Paper>
 
       <Typography variant="body2" color="textSecondary" align="center">

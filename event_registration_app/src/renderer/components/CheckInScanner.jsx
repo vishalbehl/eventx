@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   Box, Typography, Paper, Alert, CircularProgress, Button,
   Table, TableBody, TableCell, TableContainer, TableHead, TableRow, FormControl, InputLabel, Select, MenuItem, Grid
@@ -17,10 +17,8 @@ export default function CheckInScanner({ user }) {
   const [cameras, setCameras] = useState([]);
   const [selectedCameraId, setSelectedCameraId] = useState('');
 
-  const scannerRef = useRef(null);
   const readerId = "qr-reader-container";
 
-  // --- REFACTORED ---
   const onScanSuccess = useCallback(async (decodedText) => {
     if (loading) return;
     setLoading(true);
@@ -28,42 +26,29 @@ export default function CheckInScanner({ user }) {
     setSuccess('');
 
     try {
-      let regno;
-      // Use the secure verifier from the Electron backend first
-      const verificationResult = await window.electronAPI.verifyQRToken(decodedText);
+      // The backend will handle verification and check-in in one go
+      const checkinPayload = {
+        qrData: decodedText,
+        sessionId: selectedSessionId,
+        eventId: user.assignedEventId,
+      };
 
-      if (!verificationResult.success || !verificationResult.regno) {
-        // If JWT verification fails, assume the raw text is the regno
-        regno = decodedText.trim();
-      } else {
-        regno = verificationResult.regno;
-      }
+      // Use a single, unified IPC handler for check-ins
+      const result = await window.electronAPI.processCheckIn(checkinPayload);
 
-      if (!regno) {
-        throw new Error('QR code did not contain a registration number.');
-      }
-      
-      const eventId = user.assignedEventId;
-      const participantResult = await window.electronAPI.getLocalParticipantByRegno(eventId, regno);
-      
-      if(!participantResult.success || !participantResult.participant) {
-          throw new Error('Participant not found for this event.');
-      }
-      
-      const participant = participantResult.participant;
-
-      // Use the local Electron API for check-in
-      const result = await window.electronAPI.addLocalCheckIn({ 
-          eventId: eventId, 
-          participantId: participant.id, 
-          sessionId: selectedSessionId 
-      });
-
-      if (result.success && result.limit_reached) {
-        setSuccess(`${participant.name} has reached the check-in limit.`);
-      } else if (result.success) {
-        setSuccess(`Welcome, ${participant.name}! (${participant.regno})`);
-        setCheckedInList(prev => [{...participant, check_in_time: new Date().toISOString() }, ...prev]);
+      if (result.success) {
+        const participant = result.participant;
+        // Handle different success messages from the backend
+        if (result.limit_reached) {
+          setSuccess(`Check-in limit reached for ${participant.name} (${participant.regno}).`);
+        } else if (result.already_checked_in) {
+            setSuccess(`${participant.name} (${participant.regno}) is already checked in for this session.`);
+        }
+        else {
+          setSuccess(`Welcome, ${participant.name}! (${participant.regno})`);
+        }
+        // Refresh the list to show the new check-in
+        fetchCheckedInList(selectedSessionId);
       } else {
         throw new Error(result.message || 'Check-in failed');
       }
@@ -74,8 +59,39 @@ export default function CheckInScanner({ user }) {
     }
   }, [loading, selectedSessionId, user]);
 
-  // --- REFACTORED ---
+  const fetchSessions = useCallback(async () => {
+    try {
+      if (!user?.assignedEventId) return;
+      const result = await window.electronAPI.getSessions(user.assignedEventId);
+      if (result.success && result.sessions) {
+        setSessions(result.sessions);
+        if (result.sessions.length > 0 && !selectedSessionId) {
+          setSelectedSessionId(result.sessions[0].id);
+        }
+      } else {
+        setError("Could not load event sessions.");
+      }
+    } catch (err) {
+      setError("Error while fetching sessions.");
+    }
+  }, [user, selectedSessionId]);
+
+  const fetchCheckedInList = useCallback(async (sessionId) => {
+    if (!sessionId) {
+      setCheckedInList([]);
+      return;
+    }
+    try {
+      const result = await window.electronAPI.getCheckIns(sessionId);
+      setCheckedInList(result.success ? (result.checkIns || []) : []);
+    } catch (err) {
+      setCheckedInList([]);
+      console.error("Failed to fetch check-in list:", err);
+    }
+  }, []);
+
   useEffect(() => {
+    fetchSessions();
     Html5Qrcode.getCameras().then(devices => {
       if (devices && devices.length) {
         setCameras(devices);
@@ -83,73 +99,35 @@ export default function CheckInScanner({ user }) {
         setSelectedCameraId(backCamera ? backCamera.id : devices[0].id);
       }
     }).catch(() => { setError("Could not get camera devices. Please grant permissions."); });
+  }, [fetchSessions]);
 
-    async function fetchSessions() {
-      try {
-        const eventId = user.assignedEventId;
-        // Use the local Electron API
-        const res = await window.electronAPI.getSessions(eventId);
-        if (res.success && res.sessions) {
-          setSessions(res.sessions);
-          if (res.sessions.length > 0) {
-            setSelectedSessionId(res.sessions[0].id);
-          }
-        } else { setError("Could not load event sessions."); }
-      } catch {
-        setError("Server error while fetching sessions.");
-      }
-    }
-    fetchSessions();
-  }, [user]);
-
-  // --- REFACTORED ---
   useEffect(() => {
-    const fetchCheckedInList = async () => {
-      if (!selectedSessionId) { setCheckedInList([]); return; }
-      try {
-        const eventId = user.assignedEventId;
-        // Use the local Electron API
-        const res = await window.electronAPI.getLocalCheckins(eventId, selectedSessionId);
-        setCheckedInList(res.success ? (res.checkIns || []) : []);
-      } catch {
-        setCheckedInList([]);
-      }
-    };
-    fetchCheckedInList();
-  }, [selectedSessionId, user]);
+    fetchCheckedInList(selectedSessionId);
+  }, [selectedSessionId, fetchCheckedInList]);
 
-  // The scanner start/stop useEffect remains the same
   useEffect(() => {
-    if (!isScanning) return;
-    const html5QrcodeScanner = new Html5Qrcode(readerId);
-    const config = { fps: 10, qrbox: { width: 250, height: 250 } };
-    
-    html5QrcodeScanner.start(
-        selectedCameraId,
-        config,
-        onScanSuccess,
-        (errorMessage) => { console.error(`QR Code scan error: ${errorMessage}`); }
-    ).catch((err) => {
-        console.error("Could not start scanner:", err);
+    let html5QrcodeScanner;
+    if (isScanning && selectedCameraId) {
+      html5QrcodeScanner = new Html5Qrcode(readerId);
+      const config = { fps: 10, qrbox: { width: 250, height: 250 } };
+      html5QrcodeScanner.start(
+        selectedCameraId, config, onScanSuccess,
+        (errorMessage) => { /* console.log(errorMessage) */ }
+      ).catch((err) => {
         setError(`Camera Error: ${err.message}.`);
         setIsScanning(false);
-    });
+      });
+    }
 
     return () => {
       if (html5QrcodeScanner && html5QrcodeScanner.isScanning) {
-        html5QrcodeScanner.stop()
-          .then(() => {
-            html5QrcodeScanner.clear();
-            console.log("Scanner stopped and cleared.");
-          })
-          .catch((err) => console.error("Failed to stop scanner.", err));
+        html5QrcodeScanner.stop().catch((err) => console.error("Failed to stop scanner.", err));
       }
     };
   }, [isScanning, selectedCameraId, onScanSuccess]);
 
   const selectedSessionName = sessions.find(s => s.id === selectedSessionId)?.name || "N/A";
 
-  // The rest of the component's return logic remains the same
   return (
     <Box sx={{ maxWidth: 800, margin: 'auto', mt: 4 }}>
       <Paper sx={{ p: 3 }}>
@@ -177,14 +155,14 @@ export default function CheckInScanner({ user }) {
           </Grid>
         </Grid>
 
-        <Box id={readerId} sx={{ width: '100%', maxWidth: '500px', margin: 'auto', mb: 2, display: isScanning ? 'block' : 'none', "& > span": {display: 'none'} }} />
+        <Box id={readerId} sx={{ width: '100%', maxWidth: '500px', margin: 'auto', mb: 2, display: isScanning ? 'block' : 'none' }} />
 
-        <Button 
-          variant="contained" 
-          onClick={() => setIsScanning(prev => !prev)} 
-          disabled={!selectedSessionId || !selectedCameraId} 
-          color={isScanning ? "error" : "primary"} 
-          fullWidth sx={{mb: 2}}
+        <Button
+          variant="contained"
+          onClick={() => setIsScanning(prev => !prev)}
+          disabled={!selectedSessionId || !selectedCameraId}
+          color={isScanning ? "error" : "primary"}
+          fullWidth sx={{ mb: 2 }}
         >
           {isScanning ? 'Stop Scanning' : 'Start Scanning'}
         </Button>
@@ -193,7 +171,7 @@ export default function CheckInScanner({ user }) {
           {loading && <CircularProgress />}
           {error && <Alert severity="error" variant="filled" onClose={() => setError('')}><Typography variant="h6">{error}</Typography></Alert>}
           {success && <Alert severity="success" variant="filled" onClose={() => setSuccess('')}><Typography variant="h6">{success}</Typography></Alert>}
-          {!loading && !error && !success && (<Alert severity="info" icon={<CameraAltIcon />}>{isScanning ? "Point camera at a QR code." : "Scanner is idle. Click 'Start Scanning' to begin."}</Alert>)}
+          {!loading && !error && !success && (<Alert severity="info" icon={<CameraAltIcon />}>{isScanning ? "Point camera at a QR code." : "Scanner is idle."}</Alert>)}
         </Box>
       </Paper>
 

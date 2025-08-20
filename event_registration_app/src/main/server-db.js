@@ -296,6 +296,7 @@ async function recordUserLogin(config, userId, hostname) {
     await pool.query('UPDATE users SET assigned_kiosk_name = $1 WHERE id = $2', [hostname, userId]);
     await pool.end();
 }
+
 // --- Authenticate user against server DB ---
 async function authenticateServerUser(config, username, password) {
   const { dbType, host, port, user, dbName } = config;
@@ -474,7 +475,6 @@ async function getDashboardStats(config, eventId) {
   }
 }
 
-
 // --- Get sessions for an event ---
 async function getSessions(config, eventId) {
     const { dbType, host, port, user, password, dbName } = config;
@@ -585,26 +585,56 @@ async function addParticipant(config, data) {
     return result.rows[0];
 }
 
-// server-db.js
-
+// *** FIXED getEventRoles function ***
 async function getEventRoles(config, eventId) {
+  if (!eventId) {
+    console.error("getEventRoles called without an eventId.");
+    return [];
+  }
+
   const pool = getPool(config);
+  
   try {
-    const res = await pool.query('SELECT roles FROM events WHERE id = $1', [eventId]);
-    if (!res.rows.length) return [];
-    let rolesData = res.rows[0].roles;
-    if (typeof rolesData === 'string') {
-      rolesData = JSON.parse(rolesData);
+    const result = await pool.query('SELECT roles FROM events WHERE id = $1', [eventId]);
+    
+    if (!result.rows || result.rows.length === 0) {
+      console.warn(`No event found with eventId: ${eventId} in server DB.`);
+      return [];
     }
-    return Array.isArray(rolesData) ? rolesData : [];
-  } catch (e) {
-    console.error('Error fetching roles:', e);
+
+    const event = result.rows[0];
+    if (!event.roles) {
+      console.warn(`No roles found for eventId: ${eventId} in server DB.`);
+      return [];
+    }
+
+    let rolesData = event.roles;
+    
+    // Parse JSON if it's stored as string
+    if (typeof rolesData === 'string') {
+      try {
+        rolesData = JSON.parse(rolesData);
+      } catch (err) {
+        console.error('Failed to parse roles JSON from server DB:', err);
+        return [];
+      }
+    }
+
+    // Filter only enabled roles
+    const enabledRoles = Array.isArray(rolesData) 
+      ? rolesData.filter(role => role.enabled === true) 
+      : [];
+    
+    console.log(`Found ${enabledRoles.length} enabled roles for event ${eventId}:`, enabledRoles);
+    return enabledRoles;
+
+  } catch (error) {
+    console.error(`Error fetching server roles for eventId ${eventId}:`, error);
     return [];
   } finally {
     await pool.end();
   }
 }
-
 
 async function addBulkParticipants(config, eventId, participants) {
     const results = { inserted: 0, skipped: 0, errors: 0 };
@@ -630,7 +660,7 @@ async function addBulkParticipants(config, eventId, participants) {
                 designation: p.designation || null,
                 country: p.country || null,
                 paidStatus: p.paidStatus || 'Unpaid',
-                source: 'offline-bulk',
+                source: 'Online',
                 registered_at: new Date().toISOString()
             };
             await addParticipant(config, payload);
@@ -646,32 +676,57 @@ async function addBulkParticipants(config, eventId, participants) {
     return results;
 }
 
-
-async function updateParticipant(id, data) {
+async function updateParticipant(config, id, data) {
+    const pool = getPool(config);
     const { name, email, phone, role, company, designation, country, paidStatus } = data;
-    const result = await query(
+    const result = await pool.query(
         `UPDATE participants SET name=$1, email=$2, phone=$3, role=$4, company=$5, designation=$6, country=$7, paid_status=$8
         WHERE id = $9 RETURNING *`,
         [name, email, phone, role, company, designation, country, paidStatus, id]
     );
+    await pool.end();
     return result.rows[0];
 }
 
 async function getParticipants(config, eventId, filters = {}) {
+    if (!eventId) return { success: false, participants: [], message: "Event ID missing" };
+
     const pool = getPool(config);
-    let queryStr = `SELECT * FROM participants WHERE event_id = $1`;
-    const params = [eventId];
-    let paramIndex = 2;
-    for (const key in filters) {
-        if (filters[key]) {
-            queryStr += ` AND ${key} ILIKE $${paramIndex++}`;
-            params.push(`%${filters[key]}%`);
+    try {
+        let query = 'SELECT id, regno, name, email, phone, role FROM participants WHERE event_id = $1';
+        const values = [eventId]; // eventId is already a valid number from IPC
+        let idx = 2;
+
+        // Add filters dynamically
+        if (filters.regno) {
+            query += ` AND regno ILIKE $${idx++}`;
+            values.push(`%${filters.regno}%`);
         }
+        if (filters.name) {
+            query += ` AND name ILIKE $${idx++}`;
+            values.push(`%${filters.name}%`);
+        }
+        if (filters.email) {
+            query += ` AND email ILIKE $${idx++}`;
+            values.push(`%${filters.email}%`);
+        }
+        if (filters.phone) {
+            query += ` AND phone ILIKE $${idx++}`;
+            values.push(`%${filters.phone}%`);
+        }
+        if (filters.role) {
+            query += ` AND role = $${idx++}`;
+            values.push(filters.role);
+        }
+
+        const res = await pool.query(query, values);
+        return { success: true, participants: res.rows };
+    } catch (err) {
+        console.error("Error fetching participants (Postgres):", err);
+        return { success: false, participants: [], message: err.message };
+    } finally {
+        await pool.end();
     }
-    queryStr += ` ORDER BY id DESC`;
-    const result = await pool.query(queryStr, params);
-    await pool.end();
-    return result.rows;
 }
 
 async function getNextRegNo(config, eventId, roleCode) {
@@ -692,25 +747,31 @@ async function getNextRegNo(config, eventId, roleCode) {
     return `${prefix}${String(nextNum).padStart(4, '0')}`;
 }
 
-async function getParticipantByRegno(eventId, regno) {
-    const result = await query(
+async function getParticipantByRegno(config, eventId, regno) {
+    const pool = getPool(config);
+    const result = await pool.query(
         `SELECT * FROM participants WHERE event_id = $1 AND regno = $2`,
         [eventId, regno]
     );
+    await pool.end();
     return result.rows[0];
 }
 
-async function deleteParticipant(id) {
-    const result = await query(`DELETE FROM participants WHERE id = $1`, [id]);
+async function deleteParticipant(config, id) {
+    const pool = getPool(config);
+    const result = await pool.query(`DELETE FROM participants WHERE id = $1`, [id]);
+    await pool.end();
     return { changes: result.rowCount };
 }
 
-async function getParticipantsByIds(eventId, ids) {
+async function getParticipantsByIds(config, eventId, ids) {
     if (!ids || ids.length === 0) return [];
-    const result = await query(
+    const pool = getPool(config);
+    const result = await pool.query(
         `SELECT * FROM participants WHERE event_id = $1 AND id = ANY($2::int[])`,
         [eventId, ids]
     );
+    await pool.end();
     return result.rows;
 }
 
@@ -735,4 +796,5 @@ module.exports = {
     getNextRegNo,
     getParticipantsByIds,
     addBulkParticipants,
+    getEventRoles, // *** ADDED TO EXPORTS ***
 };

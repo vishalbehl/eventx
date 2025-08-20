@@ -264,14 +264,37 @@ async function getLocalSessions(eventId) {
     return await allQuery('SELECT * FROM sessions WHERE event_id=?', [targetEventId]);
 }
 
-// --- Other functions (participants, checkins, etc.) remain largely the same ---
 async function getLocalParticipants(eventId, filters = {}) {
-    // ... implementation
+    if (!eventId) return { success: false, participants: [], message: "Event ID missing" };
+
+    try {
+        let query = `SELECT id, regno, name, email, phone, role FROM participants WHERE event_id = ?`;
+        const params = [eventId];
+
+        // ... filter logic remains the same ...
+        if (filters.regno) {
+            query += ` AND regno LIKE ?`;
+            params.push(`%${filters.regno}%`);
+        }
+        if (filters.name) {
+            query += ` AND name LIKE ?`;
+            params.push(`%${filters.name}%`);
+        }
+        if (filters.role) {
+            query += ` AND role = ?`;
+            params.push(filters.role);
+        }
+
+        // Use allQuery to get all rows, not just the first one
+        const rows = await allQuery(query, params); 
+        return { success: true, participants: rows };
+    } catch (err) {
+        console.error("Error fetching participants (SQLite):", err);
+        return { success: false, participants: [], message: err.message };
+    }
 }
 
-// local-db.js
 
-// REPLACE the old addLocalParticipant function
 async function addLocalParticipant(data) {
   const { event_id, regno, name, email, phone, role, company, designation, country, paidStatus, source, registered_at } = data;
   const result = await runQuery(
@@ -307,7 +330,7 @@ async function addBulkParticipants(eventId, participants) {
                 designation: p.designation || null,
                 country: p.country || null,
                 paidStatus: p.paidStatus || 'Unpaid',
-                source: 'offline-bulk',
+                source: 'Online',
                 registered_at: new Date().toISOString()
             };
             await addLocalParticipant(payload);
@@ -380,20 +403,43 @@ async function isDatabaseSeeded() {
 }
 
 async function getEventRoles(eventId) {
-  if (!eventId) return [];
-  const event = await getQuery('SELECT roles FROM events WHERE id = ?', [eventId]);
-  if (!event || !event.roles) return [];
-  let rolesData = event.roles;
-  // SQLite stores JSON as TEXT, so handle both string and array/object
-  if (typeof rolesData === 'string') {
-    try {
-      rolesData = JSON.parse(rolesData);
-    } catch (err) {
-      console.error('Failed to parse roles JSON from local DB:', err);
-      rolesData = [];
-    }
+  if (!eventId) {
+    console.error("getEventRoles called without an eventId.");
+    return [];
   }
-  return Array.isArray(rolesData) ? rolesData : [];
+  
+  try {
+    const event = await getQuery('SELECT roles FROM events WHERE id = ?', [eventId]);
+    
+    if (!event || !event.roles) {
+      console.warn(`No roles found for eventId: ${eventId} in local DB.`);
+      return [];
+    }
+    
+    let rolesData = event.roles;
+    
+    // SQLite stores JSON as TEXT, so it must be parsed
+    if (typeof rolesData === 'string') {
+      try {
+        rolesData = JSON.parse(rolesData);
+      } catch (err) {
+        console.error('Failed to parse roles JSON from local DB:', err);
+        return [];
+      }
+    }
+
+    // Filter only enabled roles
+    const enabledRoles = Array.isArray(rolesData) 
+      ? rolesData.filter(role => role.enabled === true) 
+      : [];
+    
+    console.log(`Found ${enabledRoles.length} enabled roles for event ${eventId}:`, enabledRoles);
+    return enabledRoles;
+
+  } catch (error) {
+    console.error(`Error fetching local roles for eventId ${eventId}:`, error);
+    return [];
+  }
 }
 
 

@@ -1,47 +1,69 @@
-// main.js
+// src/main/main.js
 require('dotenv').config();
 const { app, BrowserWindow, ipcMain, dialog } = require('electron');
 const path = require('path');
-const Store = require('electron-store');
+// CORRECTED IMPORT SYNTAX FOR ELECTRON-STORE
+const Store = require('electron-store').default;
 const os = require('os');
 const jwt = require('jsonwebtoken');
-const cors = require('cors'); // fixed: removed duplicate express import
 const fetch = (...args) => import('node-fetch').then(({ default: fetch }) => fetch(...args));
 
 // DB modules
 const localDb = require('./local-db');
 const serverDb = require('./server-db');
-const qrService = require('./qrService'); 
-const scannerService = require('./scannerService'); 
 
 // --- Constants & Global State ---
 const JWT_SECRET = process.env.JWT_SECRET || 'default-fallback-secret-key';
-const store = new (Store.default || Store)();
+// CORRECTED INSTANTIATION
+const store = new Store();
 let mainWindow;
-
-// Local API ports (if you expose an API from Electron)
-const LOCAL_API_PORT = 4000;
-const KIOSK_LISTENER_PORT = 4001;
-
-// Default DB config from .env (used when no config is stored yet)
-const defaultDbConfig = {
-  mode: 'server', // default to server if using Postgres
-  dbType: process.env.DB_TYPE || 'postgres',
-  host: process.env.DB_HOST || 'localhost',
-  port: parseInt(process.env.DB_PORT || '5432', 10),
-  user: process.env.DB_USER || 'postgres',
-  password: process.env.DB_PASSWORD ? String(process.env.DB_PASSWORD) : '',
-  database: process.env.DB_NAME || 'eventdb',
-};
 
 // =================================================================
 // MAIN LIFECYCLE
 // =================================================================
 
+// THIS IS THE NEW, CRITICAL FUNCTION TO FIX THE RECONNECTION ISSUE
+async function initializeDatabaseConnection() {
+  const config = store.get('dbConfig');
+  if (!config || !config.mode) {
+    console.log('No database configured yet. Skipping auto-connect.');
+    return;
+  }
+
+  console.log(`Found saved config for mode: '${config.mode}'. Attempting to connect...`);
+  try {
+    let result;
+    if (config.mode === 'local') {
+      // For local DB, we just need to re-initialize the connection object
+      result = await localDb.createLocalDatabase({
+        folderPath: config.folderPath,
+        dbName: config.dbName,
+      });
+    } else { // 'server' mode
+      // For server DB, we don't need to create tables again, just verify the connection exists
+      result = { success: true }; // Assume success, subsequent calls will create pools
+      console.log('Server mode configured. Connections will be established on demand.');
+    }
+
+    if (result.success) {
+      console.log('✅ Database connection established successfully on startup.');
+    } else {
+      throw new Error(result.error || 'Unknown error during connection.');
+    }
+  } catch (error) {
+    console.error('🔴 FAILED to connect to the database on startup:', error.message);
+    // You might want to alert the user in the renderer process about this failure
+  }
+}
+
 app.whenReady().then(() => {
-  createWindow();
-  app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow();
+  // Run the database connection logic BEFORE creating the window
+  initializeDatabaseConnection().then(() => {
+    createWindow();
+
+    app.on('activate', () => {
+      if (BrowserWindow.getAllWindows().length === 0) createWindow();
+    });
   });
 });
 
@@ -67,11 +89,11 @@ function createWindow() {
 }
 
 // =================================================================
-// IPC HANDLERS
+// IPC HANDLERS - (The rest of the file remains the same)
 // =================================================================
 
 // --- App Configuration & Setup ---
-ipcMain.handle('get-config', () => store.get('dbConfig') || defaultDbConfig);
+ipcMain.handle('get-config', () => store.get('dbConfig'));
 ipcMain.handle('save-config', (_, configData) => {
   store.set('dbConfig', configData);
   return { success: true };
@@ -90,7 +112,12 @@ ipcMain.handle('select-local-db-folder', async () => {
 
 ipcMain.handle('create-local-db', async (_, settings) => {
   try {
-    return await localDb.createLocalDatabase(settings);
+    const result = await localDb.createLocalDatabase(settings);
+    if (result.success) {
+        // Also save the config when a local db is successfully created
+        store.set('dbConfig', { ...settings, mode: 'local' });
+    }
+    return result;
   } catch (err) {
     return { success: false, error: err.message };
   }
@@ -116,7 +143,7 @@ ipcMain.handle('create-server-db', async (_, dbConfig) => {
 
 ipcMain.handle('is-database-seeded', async () => {
   try {
-    const config = store.get('dbConfig') || defaultDbConfig;
+    const config = store.get('dbConfig');
     if (!config || !config.mode) return false;
     return config.mode === 'server'
       ? await serverDb.isServerDatabaseSeeded(config)
@@ -128,9 +155,10 @@ ipcMain.handle('is-database-seeded', async () => {
 
 ipcMain.handle('login-user', async (event, { username, password }) => {
   try {
-    const config = store.get('dbConfig') || defaultDbConfig;
+    const config = store.get('dbConfig');
     if (!config) return { success: false, message: 'Database not configured.' };
 
+    let user;
     const authResult = config.mode === 'server'
         ? await serverDb.authenticateServerUser(config, username, password)
         : { success: !!(user = await localDb.authenticateLocalUser(username, password)), user };
@@ -139,54 +167,53 @@ ipcMain.handle('login-user', async (event, { username, password }) => {
       return { success: false, message: authResult.message || 'Invalid credentials' };
     }
 
-    const user = authResult.user;
+    const authenticatedUser = authResult.user;
     const hostname = os.hostname();
 
     if (config.mode === 'server') {
-      await serverDb.recordUserLogin(config, user.id, hostname);
+      await serverDb.recordUserLogin(config, authenticatedUser.id, hostname);
     } else {
-      await localDb.recordUserLogin(user.id, hostname);
+      await localDb.recordUserLogin(authenticatedUser.id, hostname);
     }
 
-    let activeEventId = store.get('activeEventId', null);
-    if (!activeEventId) {
-      activeEventId = config.mode === 'server'
-        ? await serverDb.getLatestEventId(config)
-        : await localDb.getLatestEventId();
-      if (activeEventId) store.set('activeEventId', activeEventId);
-    }
+    // This is the single source of truth for the currently active event on this machine.
+    const activeEventId = store.get('activeEventId', null);
 
     if (activeEventId) {
+      // Update the user's record in the database for reference
       if (config.mode === 'server') {
-        await serverDb.updateUserEventId(config, user.id, activeEventId);
+        await serverDb.updateUserEventId(config, authenticatedUser.id, activeEventId);
       } else {
-        await localDb.updateUserEventId(user.id, activeEventId);
+        await localDb.updateUserEventId(authenticatedUser.id, activeEventId);
       }
-      user.assignedEventId = activeEventId;
     }
 
+    // ******** THE FIX IS HERE ********
+    // Create the token payload using the reliable 'activeEventId' from the store,
+    // NOT the potentially stale 'assigned_event_id' from the user's database record.
     const userPayload = {
-      id: user.id,
-      username: user.username,
-      role: user.role,
-      assignedEventId: user.assigned_event_id || user.assignedEventId || activeEventId,
+      id: authenticatedUser.id,
+      username: authenticatedUser.username,
+      role: authenticatedUser.role,
+      assignedEventId: activeEventId, // Directly use the confirmed active event ID
     };
     const token = jwt.sign(userPayload, JWT_SECRET, { expiresIn: '8h' });
 
     return { success: true, token };
   } catch (err) {
+    console.error("Login Error in main.js:", err);
     return { success: false, message: `Login failed: ${err.message}` };
   }
 });
+
 // --- Central Server Communication ---
 ipcMain.handle('test-central-server', async (_, centralUrl) => {
     try {
-        // This will try to connect to the /api/status endpoint of your server
         const response = await fetch(`${centralUrl}/api/status`);
-        return { 
-            success: response.ok, 
-            status: response.status, 
-            message: response.ok ? 'Connection successful' : `Server returned ${response.status}` 
+        return {
+            success: response.ok,
+            status: response.status,
+            message: response.ok ? 'Connection successful' : `Server returned ${response.status}`
         };
     } catch (error) {
         return { success: false, message: `Connection failed: ${error.message}` };
@@ -229,7 +256,7 @@ ipcMain.handle('fetch-central-events', async (_, { centralUrl, authToken }) => {
 // --- User Management (Mode-Aware) ---
 ipcMain.handle('get-users', async () => {
   try {
-    const config = store.get('dbConfig') || defaultDbConfig;
+    const config = store.get('dbConfig');
     if (!config) return { success: false, users: [], message: 'Database not configured' };
 
     const users =
@@ -239,16 +266,12 @@ ipcMain.handle('get-users', async () => {
 
     return { success: true, users };
   } catch (error) {
-    return {
-      success: false,
-      users: [],
-      message: `Failed to fetch users: ${error.message}`,
-    };
+    return { success: false, users: [], message: `Failed to fetch users: ${error.message}` };
   }
 });
 
 ipcMain.handle('add-user', async (_, userData) => {
-  const config = store.get('dbConfig') || defaultDbConfig;
+  const config = store.get('dbConfig');
   if (!config) return { success: false, message: 'DB not configured' };
   return config.mode === 'server'
     ? await serverDb.addUser(config, userData)
@@ -256,112 +279,105 @@ ipcMain.handle('add-user', async (_, userData) => {
 });
 
 ipcMain.handle('update-user', async (_, { id, fields }) => {
-    const config = store.get('dbConfig') || defaultDbConfig;
+    const config = store.get('dbConfig');
+    if (!config) return { success: false, message: 'DB not configured' };
     return config.mode === 'server'
         ? await serverDb.updateUser(config, id, fields)
         : await localDb.updateLocalUser(id, fields);
 });
 
 ipcMain.handle('delete-user', async (_, id) => {
-    const config = store.get('dbConfig') || defaultDbConfig;
+    const config = store.get('dbConfig');
+    if (!config) return { success: false, message: 'DB not configured' };
     return config.mode === 'server'
         ? await serverDb.deleteUser(config, id)
         : await localDb.deleteLocalUser(id);
 });
+
 // --- Data Synchronization ---
 ipcMain.handle('seed-database-from-cloud', async (_, { authToken, eventId }) => {
   try {
-    const config = store.get('dbConfig') || defaultDbConfig;
+    const config = store.get('dbConfig');
     if (!config) throw new Error('Database not configured.');
-
     const centralUrl = store.get('centralServerUrl');
-    if (!centralUrl) {
-        throw new Error('Central server URL is not configured. Please log in again on the Settings page.');
-    }
+    if (!centralUrl) throw new Error('Central server URL is not configured.');
 
-    // FIX: Changed the endpoint from '/full' to '/seed' to match your server.js
     const response = await fetch(`${centralUrl}/api/events/${eventId}/seed`, {
       headers: { Authorization: `Bearer ${authToken}` },
     });
 
-    if (!response.ok) {
-      throw new Error(`Central server returned ${response.status}`);
-    }
-
+    if (!response.ok) throw new Error(`Central server returned ${response.status}`);
     const result = await response.json();
-    // The central server nests the data in a "data" property
-    const cloudData = result.data; 
+    if (!result.success) throw new Error(result.message || 'Failed to fetch seed data.');
 
-    if (!cloudData || !cloudData.event) {
-      throw new Error('Invalid data structure received from central server.');
-    }
+    const cloudData = result.data;
+    if (!cloudData || !cloudData.event) throw new Error('Invalid data structure from server.');
 
-    const seedResult =
-      config.mode === 'server'
+    const seedResult = config.mode === 'server'
         ? await serverDb.clearAndSeedDataFromServer(config, cloudData)
         : await localDb.clearAndSeedDataFromServer(cloudData);
 
-    if (!seedResult.success) {
-      throw new Error(seedResult.message || 'Seeding failed.');
-    }
+    if (!seedResult.success) throw new Error(seedResult.message || 'Seeding failed.');
 
     store.set('activeEventId', cloudData.event.id);
-
     return { success: true, message: 'Database seeded successfully', eventName: cloudData.event.name };
   } catch (err) {
     console.error('Seeding failed:', err);
     return { success: false, message: `Seeding failed: ${err.message}` };
   }
-});;
+});
 
 // --- Dashboard & Data ---
 ipcMain.handle('get-dashboard-stats', async (_, eventId) => {
     try {
-      const config = store.get('dbConfig') || defaultDbConfig;
+      const config = store.get('dbConfig');
       if (!config) throw new Error('Database not configured.');
-      
       const data = config.mode === 'server'
-        ? await serverDb.getDashboardStats(config, eventId) // Correctly passes both config and eventId
+        ? await serverDb.getDashboardStats(config, eventId)
         : await localDb.getLocalDashboardStats(eventId);
-        
       return { success: true, ...data };
     } catch (err) {
-      console.error('Error in get-dashboard-stats:', err);
       return { success: false, message: err.message };
     }
 });
 
-ipcMain.handle('get-participants', async (_, { eventId, filters }) => {
-    const config = store.get('dbConfig') || defaultDbConfig;
-    return config.mode === 'server'
-        ? await serverDb.getParticipants(config, eventId, filters)
-        : await localDb.getLocalParticipants(eventId, filters);
+ipcMain.handle('get-participants', async (event, data) => {
+    try {
+        const { eventId, filters } = data;
+        if (!eventId || isNaN(eventId)) throw new Error("Invalid event ID");
+
+        const config = store.get('dbConfig');
+        if (!config) throw new Error("Database not configured.");
+
+        if (config.mode === 'server') {
+            return await serverDb.getParticipants(config, eventId, filters);
+        } else {
+            return await localDb.getLocalParticipants(eventId, filters);
+        }
+    } catch (err) {
+        console.error("Error in get-participants handler:", err);
+        return { success: false, message: err.message, participants: [] };
+    }
 });
 
-// --- Fixed get-next-regno (works for Postgres & SQLite)
+
 ipcMain.handle('get-next-regno', async (_, { eventId, roleCode }) => {
-  const config = store.get('dbConfig') || defaultDbConfig;
+  const config = store.get('dbConfig');
+  if (!config) return { success: false, regno: 'Error' };
   const regno = config.mode === 'server'
       ? await serverDb.getNextRegNo(config, eventId, roleCode)
       : await localDb.getNextRegNo(eventId, roleCode);
   return { success: true, regno };
 });
 
-
-// main.js
-
-// ... (other handlers)
-
 // --- Participant Management (Mode-Aware) ---
 ipcMain.handle('add-participant', async (_, participantData) => {
     try {
         const config = store.get('dbConfig');
         if (!config) throw new Error("Database not configured.");
-
         const result = config.mode === 'server'
             ? await serverDb.addParticipant(config, participantData)
             : await localDb.addLocalParticipant(participantData);
-        
         return { success: true, participant: result };
     } catch (err) {
         return { success: false, message: err.message };
@@ -372,11 +388,9 @@ ipcMain.handle('update-participant', async (_, { id, fields }) => {
     try {
         const config = store.get('dbConfig');
         if (!config) throw new Error("Database not configured.");
-
         const result = config.mode === 'server'
             ? await serverDb.updateParticipant(config, id, fields)
             : await localDb.updateLocalParticipant(id, fields);
-        
         return { success: true, participant: result };
     } catch (err) {
         return { success: false, message: err.message };
@@ -387,27 +401,22 @@ ipcMain.handle('delete-participant', async (_, id) => {
     try {
         const config = store.get('dbConfig');
         if (!config) throw new Error("Database not configured.");
-
         const result = config.mode === 'server'
             ? await serverDb.deleteParticipant(config, id)
             : await localDb.deleteLocalParticipant(id);
-        
         return { success: true, result };
     } catch (err) {
         return { success: false, message: err.message };
     }
 });
 
-
 ipcMain.handle('add-bulk-participants', async (_, eventId, participants) => {
     try {
         const config = store.get('dbConfig');
         if (!config) throw new Error("Database not configured.");
-
         const result = config.mode === 'server'
             ? await serverDb.addBulkParticipants(config, eventId, participants)
             : await localDb.addBulkParticipants(eventId, participants);
-        
         return { success: true, result };
     } catch (err) {
         return { success: false, message: err.message };
@@ -417,14 +426,78 @@ ipcMain.handle('add-bulk-participants', async (_, eventId, participants) => {
 ipcMain.handle('get-event-roles', async (_, eventId) => {
     try {
         const config = store.get('dbConfig');
-        if (!config) throw new Error("Database not configured.");
+        if (!config) {
+            console.error("Database not configured.");
+            return { success: false, message: "Database not configured.", roles: [] };
+        }
 
-        const roles = config.mode === 'server'
-            ? await serverDb.getEventRoles(config, eventId)
-            : await localDb.getEventRoles(eventId);
+        let roles;
+        if (config.mode === 'server') {
+            roles = await serverDb.getEventRoles(config, eventId);
+        } else {
+            roles = await localDb.getEventRoles(eventId);
+        }
         
+        console.log(`Returning ${roles.length} roles for event ${eventId}`);
         return { success: true, roles };
     } catch (err) {
+        console.error("Error in get-event-roles handler:", err);
         return { success: false, message: err.message, roles: [] };
+    }
+});
+
+
+// ******** ADDED HANDLERS FOR CHECK-IN SCANNER ********
+
+ipcMain.handle('get-sessions', async (_, eventId) => {
+    try {
+        const config = store.get('dbConfig');
+        if (!config) throw new Error("Database not configured.");
+        const sessions = config.mode === 'server'
+            ? await serverDb.getSessions(config, eventId)
+            : await localDb.getLocalSessions(eventId);
+        return { success: true, sessions };
+    } catch (err) {
+        return { success: false, message: err.message, sessions: [] };
+    }
+});
+
+ipcMain.handle('get-check-ins', async (_, sessionId) => {
+    try {
+        const config = store.get('dbConfig');
+        if (!config) throw new Error("Database not configured.");
+        // NOTE: Your DB files need to have these functions implemented
+        const checkIns = config.mode === 'server'
+            ? await serverDb.getCheckInsBySession(config, sessionId)
+            : await localDb.getCheckInsBySession(sessionId);
+        return { success: true, checkIns };
+    } catch (err) {
+        return { success: false, message: err.message, checkIns: [] };
+    }
+});
+
+ipcMain.handle('process-check-in', async (_, { qrData, sessionId, eventId }) => {
+    try {
+        const config = store.get('dbConfig');
+        if (!config) throw new Error("Database not configured.");
+
+        const verificationResult = scannerService.verifyToken(qrData);
+        let regno = verificationResult.success ? verificationResult.payload.regno : qrData.trim();
+
+        const participant = config.mode === 'server'
+            ? await serverDb.getParticipantByRegno(config, eventId, regno)
+            : await localDb.getParticipantByRegno(eventId, regno);
+        
+        if (!participant) {
+            throw new Error(`Participant with Reg. No. '${regno}' not found.`);
+        }
+
+        const checkInResult = config.mode === 'server'
+            ? await serverDb.addCheckIn(config, eventId, participant.id, sessionId)
+            : await localDb.addCheckIn(eventId, participant.id, sessionId);
+        
+        return { ...checkInResult, participant };
+    } catch (err) {
+        return { success: false, message: err.message };
     }
 });

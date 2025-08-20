@@ -65,7 +65,7 @@ export default function UserDashboard({ user }) {
     if (!data?.roles || data.roles.length === 0) return null;
     return {
       labels: data.roles.map((r) => r.role),
-      datasets: [{ data: data.roles.map((r) => r.count), backgroundColor: ['#1976d2', '#dc004e', '#ffa000', '#388e3c', '#7b1fa2'], hoverOffset: 4 }],
+      datasets: [{ data: data.roles.map((r) => r.count), backgroundColor: ['#1976D2', '#DC004E', '#FF9800', '#388E3C', '#7B1FA2', '#FFEB3B', '#FF6C03', '#17F9D3', '#F44336', '#4CAF50', '#9C27B0', '#00BCD4', '#FF5722', '#673AB7', '#009688'], hoverOffset: 4 }],
     };
   }, [data]);
   
