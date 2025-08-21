@@ -75,7 +75,7 @@ export default function AllParticipants({ user }) {
     const [participants, setParticipants] = useState([]);
     const [selected, setSelected] = useState([]);
     const [filters, setFilters] = useState({ regno: '', name: '', email: '', phone: '', role: '' });
-    const [loading, setLoading] = useState(false);
+    const [loading, setLoading] = useState(true);
     const [page, setPage] = useState(0);
     const [rowsPerPage, setRowsPerPage] = useState(15);
     const [snackbar, setSnackbar] = useState({ open: false, message: '', severity: 'success' });
@@ -84,18 +84,24 @@ export default function AllParticipants({ user }) {
     const [printLoading, setPrintLoading] = useState(false);
     const [eventRoles, setEventRoles] = useState([]);
 
-    const showSnackbar = (msg, severity = 'success') => setSnackbar({ open: true, message: msg, severity });
+    const showSnackbar = (message, severity = 'success') => setSnackbar({ open: true, message, severity });
 
     const fetchParticipants = useCallback(async () => {
         if (!user?.assignedEventId) return;
         setLoading(true);
         try {
-            const eventId = Number(user.assignedEventId);  // convert to number
+            // Make sure assignedEventId is a number
+            const eventId = Number(user.assignedEventId);
             if (isNaN(eventId)) throw new Error('Invalid event ID in renderer');
 
-            const cleanFilters = Object.fromEntries(Object.entries(filters).filter(([_, v]) => v));
-            const payload = { eventId, filters: cleanFilters };  // ensure structure matches main.js
-            console.log('Fetching participants with payload:', payload);
+            // Only include filters that have a value
+            const cleanFilters = Object.fromEntries(
+                Object.entries(filters || {}).filter(([_, v]) => v)
+            );
+
+            // Flatten payload correctly
+            const payload = { eventId, filters: cleanFilters };
+            console.log('Sending payload to backend:', payload);
 
             const result = await window.electronAPI.getParticipants(payload);
 
@@ -153,55 +159,87 @@ export default function AllParticipants({ user }) {
     };
     const handleSelect = id => setSelected(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
 
-    const handlePrint = async ids => {
-        if (!ids.length) return showSnackbar('No participants selected', 'warning');
+    const handlePrint = async (ids) => {
+        // This check is slightly different from your uploaded code to be more robust
+        if (!ids || ids.length === 0) return showSnackbar('No participants selected.', 'warning');
         setPrintLoading(true);
-        showSnackbar('Generating PDF...', 'info');
+        showSnackbar('Preparing to print...', 'info');
 
         try {
-            const mockTemplate = {
-                template_data: {
-                    width_mm: 85, height_mm: 55,
-                    pages: [{
-                        backgroundColor: '#fff', print_backgroundColor: true,
-                        margin_top_mm: 5, margin_left_mm: 5, margin_right_mm: 5, margin_bottom_mm: 5,
-                        fields: [
-                            { id: 1, type: 'text', placeholder: '{{name}}', x_mm: 5, y_mm: 5, width_mm: 75, height_mm: 10, fontSize: 14, bold: true, align: 'center' },
-                            { id: 2, type: 'text', placeholder: '{{role}}', x_mm: 5, y_mm: 15, width_mm: 75, height_mm: 8, fontSize: 10, align: 'center' },
-                            { id: 3, type: 'text', placeholder: '{{company}}', x_mm: 5, y_mm: 23, width_mm: 75, height_mm: 8, fontSize: 10, align: 'center' },
-                            { id: 4, type: 'qr', placeholder: '{{regno}}', x_mm: 27.5, y_mm: 32, width_mm: 20, height_mm: 20 }
-                        ]
-                    }]
-                }
-            };
+            const eventId = user.assignedEventId;
 
+            // 1. Fetch the event details to get print_settings
+            const eventRes = await window.electronAPI.getEventById(eventId);
+            if (!eventRes.success || !eventRes.event) {
+                throw new Error('Could not find event details. Printing is not configured.');
+            }
+
+            // 2. Parse the print_settings from the event
+            let printSettings = eventRes.event.print_settings;
+            if (typeof printSettings === 'string') {
+                printSettings = JSON.parse(printSettings || '{}');
+            }
+
+            const participantsToPrint = participants.filter(p => ids.includes(p.id));
+            if (participantsToPrint.length === 0) throw new Error("Selected participants not found.");
+
+            // 3. Determine the correct template ID based on the participant's role
+            // This logic now correctly handles different templates for different roles if needed.
+            const firstParticipantRole = participantsToPrint[0].role;
+            const templateId = printSettings.useSingleBadgeTemplate
+                ? printSettings.singleBadgeTemplateId
+                : (printSettings.badgeAssignments || {})[firstParticipantRole];
+
+            if (!templateId) {
+                throw new Error(`No badge template is assigned for the role "${firstParticipantRole}". Check event settings.`);
+            }
+
+            // 4. Fetch the actual template data
+            const templateRes = await window.electronAPI.getTemplateById(templateId);
+            if (!templateRes.success || !templateRes.template) {
+                throw new Error('The assigned print template could not be found or is corrupted.');
+            }
+            const template = templateRes.template;
+
+            // 5. Generate the PDF
+            const { width_mm, height_mm } = template.template_data;
             const pdf = new jsPDF({
-                orientation: mockTemplate.template_data.width_mm > mockTemplate.template_data.height_mm ? 'landscape' : 'portrait',
+                orientation: width_mm > height_mm ? 'landscape' : 'portrait',
                 unit: 'mm',
-                format: [mockTemplate.template_data.width_mm, mockTemplate.template_data.height_mm]
+                format: [width_mm, height_mm]
             });
 
             const printContainer = document.createElement('div');
             document.body.appendChild(printContainer);
-            printContainer.style.position = 'fixed';
-            printContainer.style.opacity = '0';
-            printContainer.style.zIndex = '-1';
+            Object.assign(printContainer.style, { position: 'fixed', opacity: '0', zIndex: '-1', width: `${width_mm}mm`, height: `${height_mm}mm` });
 
-            for (let i = 0; i < ids.length; i++) {
-                const participant = participants.find(p => p.id === ids[i]);
-                if (!participant) continue;
-                if (i > 0) pdf.addPage([mockTemplate.template_data.width_mm, mockTemplate.template_data.height_mm]);
-                const qrToken = participant.regno; // Replace with real QR token if needed
-                printContainer.innerHTML = ReactDOMServer.renderToString(<PrintableItem template={mockTemplate} participant={participant} qrToken={qrToken} />);
-                const canvas = await html2canvas(printContainer.firstChild, { scale: 4, useCORS: true, backgroundColor: null });
-                pdf.addImage(canvas.toDataURL('image/png'), 'PNG', 0, 0, mockTemplate.template_data.width_mm, mockTemplate.template_data.height_mm);
+            for (let i = 0; i < participantsToPrint.length; i++) {
+                const participant = participantsToPrint[i];
+                if (i > 0) pdf.addPage([width_mm, height_mm], pdf.getFont().orientation);
+
+                const qrToken = participant.regno; // Using regno for the QR code
+
+                const badgeHtml = ReactDOMServer.renderToString(
+                    <PrintableItem template={template} participant={participant} qrToken={qrToken} />
+                );
+                printContainer.innerHTML = badgeHtml;
+
+                // ******** THIS IS THE FIX ********
+                // Reduced scale from 4 to 2
+                const canvas = await html2canvas(printContainer.children[0], { scale: 2, useCORS: true, backgroundColor: null });
+                
+                // Use JPEG for better compression and smaller file size
+                const imgData = canvas.toDataURL('image/jpeg', 0.9);
+                pdf.addImage(imgData, 'JPEG', 0, 0, width_mm, height_mm);
             }
 
             document.body.removeChild(printContainer);
             const blob = pdf.output('blob');
             window.open(URL.createObjectURL(blob), '_blank');
+            showSnackbar('PDF generated successfully!', 'success');
+
         } catch (err) {
-            showSnackbar(err.message || 'PDF generation failed', 'error');
+            showSnackbar(err.message || 'PDF generation failed.', 'error');
         } finally {
             setPrintLoading(false);
         }
@@ -226,13 +264,13 @@ export default function AllParticipants({ user }) {
                         <Grid item xs={12} sm={3}><TextField label="Name" name="name" value={filters.name} onChange={handleFilterChange} size="small" fullWidth /></Grid>
                         <Grid item xs={12} sm={3}><TextField label="Email" name="email" value={filters.email} onChange={handleFilterChange} size="small" fullWidth /></Grid>
                         <Grid item xs={12} sm={2}>
-                            <TextField select label="Role" name="role" value={filters.role} onChange={handleFilterChange} size="small" fullWidth>
+                            <TextField select label="Role" name="role" value={filters.role} onChange={handleFilterChange} size="small" fullWidth sx={{ minWidth: 200 }}>
                                 <MenuItem value=""><em>All Roles</em></MenuItem>
                                 {eventRoles.map(r => <MenuItem key={r.code} value={r.name}>{r.name}</MenuItem>)}
                             </TextField>
                         </Grid>
                         <Grid item xs={12} sm={2}>
-                            <Button type="submit" variant="contained" fullWidth disabled={loading}>Search</Button>
+                            <Button type="submit" variant="contained" fullWidth disabled={loading} sx={{minWidth:150}}>Search</Button>
                         </Grid>
                     </Grid>
                 </form>

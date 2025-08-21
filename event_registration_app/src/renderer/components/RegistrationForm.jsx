@@ -208,7 +208,7 @@ export default function RegistrationForm({ mode = 'create', initialData = {}, on
   );
 
   return (
-    <Box sx={{ maxWidth: 600, margin: 'auto', mt: 2 }}>
+    <Box sx={{ maxWidth: 1000, margin: 'auto', mt: 2 }}>
       <Paper>
         <Tabs value={tabIndex} onChange={(e, val) => setTabIndex(val)} centered>
           <Tab label="Single Registration" />

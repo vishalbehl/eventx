@@ -180,7 +180,10 @@ async function createServerDatabase(config) {
           paid_status VARCHAR(50),
           registered_at TIMESTAMP,
           needs_sync BOOLEAN DEFAULT FALSE,
-          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE(event_id, email),
+          UNIQUE(event_id, phone)
+
         );`,
         `CREATE TABLE IF NOT EXISTS sessions (
           id SERIAL PRIMARY KEY,
@@ -340,59 +343,73 @@ async function authenticateServerUser(config, username, password) {
 
 // --- Clear and seed data from central server ---
 async function clearAndSeedDataFromServer(config, data) {
-    const { dbType, host, port, user, password, dbName } = config;
-    const { event, participants, sessions } = data;
+    const { event, participants, sessions, templates } = data;
     let client;
 
     try {
-        client = new Client({ host, port, user, password, database: dbName });
+        client = new Client({
+            host: config.host, port: config.port, user: config.user,
+            password: config.password, database: config.dbName
+        });
         await client.connect();
         await client.query('BEGIN');
 
-        // Clear existing data for the event
+        // Clear existing data
         await client.query('DELETE FROM check_ins WHERE event_id = $1', [event.id]);
         await client.query('DELETE FROM participants WHERE event_id = $1', [event.id]);
         await client.query('DELETE FROM sessions WHERE event_id = $1', [event.id]);
         await client.query('DELETE FROM events WHERE id = $1', [event.id]);
+        await client.query('DELETE FROM print_templates');
 
-        // Fix JSON fields
-        if (event.roles && typeof event.roles !== 'string') {
-            event.roles = JSON.stringify(event.roles);
-        }
-        if (event.print_settings && typeof event.print_settings !== 'string') {
-            event.print_settings = JSON.stringify(event.print_settings);
-        }
-        if (event.local_admin_ids && !Array.isArray(event.local_admin_ids)) {
-            try {
-                event.local_admin_ids = JSON.parse(event.local_admin_ids);
-            } catch {
-                event.local_admin_ids = [];
-            }
-        }
+        // ******** THIS IS THE CORRECTED SECTION ********
+        // Create a copy of the event object to modify
+        const eventToInsert = { ...event };
 
-        // Insert event
-        const eventKeys = Object.keys(event).join(', ');
-        const eventValues = Object.values(event);
+        // Manually stringify JSON fields before insertion
+        if (eventToInsert.roles && typeof eventToInsert.roles !== 'string') {
+            eventToInsert.roles = JSON.stringify(eventToInsert.roles);
+        }
+        if (eventToInsert.print_settings && typeof eventToInsert.print_settings !== 'string') {
+            eventToInsert.print_settings = JSON.stringify(eventToInsert.print_settings);
+        }
+        
+        const eventKeys = Object.keys(eventToInsert).join(', ');
+        const eventValues = Object.values(eventToInsert);
         const eventPlaceholders = eventValues.map((_, i) => `$${i + 1}`).join(', ');
-        await client.query(`INSERT INTO events (${eventKeys}) VALUES (${eventPlaceholders})`, eventValues);
+        await client.query(`INSERT INTO events (${eventKeys}) VALUES (${eventPlaceholders}) ON CONFLICT (id) DO NOTHING`, eventValues);
 
-        // Insert sessions
+
+        // Insert sessions (no change needed here)
         if (sessions && sessions.length > 0) {
             for (const session of sessions) {
                 const sKeys = Object.keys(session).join(', ');
                 const sValues = Object.values(session);
                 const sPlaceholders = sValues.map((_, i) => `$${i + 1}`).join(', ');
-                await client.query(`INSERT INTO sessions (${sKeys}) VALUES (${sPlaceholders})`, sValues);
+                await client.query(`INSERT INTO sessions (${sKeys}) VALUES (${sPlaceholders}) ON CONFLICT (id) DO NOTHING`, sValues);
             }
         }
 
-        // Insert participants
+        // Insert participants (no change needed here)
         if (participants && participants.length > 0) {
             for (const p of participants) {
                 const pKeys = Object.keys(p).join(', ');
                 const pValues = Object.values(p);
                 const pPlaceholders = pValues.map((_, i) => `$${i + 1}`).join(', ');
-                await client.query(`INSERT INTO participants (${pKeys}) VALUES (${pPlaceholders})`, pValues);
+                await client.query(`INSERT INTO participants (${pKeys}) VALUES (${pPlaceholders}) ON CONFLICT (id) DO NOTHING`, pValues);
+            }
+        }
+
+        // Insert print templates, ensuring template_data is a string
+        if (templates && templates.length > 0) {
+            for (const template of templates) {
+                const templateToInsert = { ...template };
+                if (templateToInsert.template_data && typeof templateToInsert.template_data !== 'string') {
+                    templateToInsert.template_data = JSON.stringify(templateToInsert.template_data);
+                }
+                const tKeys = Object.keys(templateToInsert).join(', ');
+                const tValues = Object.values(templateToInsert);
+                const tPlaceholders = tValues.map((_, i) => `$${i + 1}`).join(', ');
+                await client.query(`INSERT INTO print_templates (${tKeys}) VALUES (${tPlaceholders}) ON CONFLICT (id) DO UPDATE SET template_name = EXCLUDED.template_name, template_data = EXCLUDED.template_data`, tValues);
             }
         }
 
@@ -409,50 +426,24 @@ async function clearAndSeedDataFromServer(config, data) {
 
 // --- Get dashboard statistics ---
 async function getDashboardStats(config, eventId) {
+  // Corrected query to use subqueries for accurate counts
   const statsQuery = `
     SELECT
-      e.id,
-      COUNT(p.id) AS total_participants,
-      COUNT(DISTINCT c.participant_id) AS total_arrived,
-      COUNT(CASE WHEN p.source = 'online' THEN 1 END) AS total_online,
-      COUNT(CASE WHEN p.source = 'offline' THEN 1 END) AS total_offline,
-      COUNT(CASE WHEN p.paid_status = 'Paid' THEN 1 END) AS total_paid,
-      COUNT(CASE WHEN p.paid_status = 'Unpaid' THEN 1 END) AS total_unpaid
-    FROM events e
-    LEFT JOIN participants p ON e.id = p.event_id
-    LEFT JOIN check_ins c ON e.id = c.event_id
-    WHERE e.id = $1
-    GROUP BY e.id
+      (SELECT COUNT(*) FROM participants WHERE event_id = $1) AS total_participants,
+      (SELECT COUNT(DISTINCT participant_id) FROM check_ins WHERE event_id = $1) AS total_arrived,
+      (SELECT COUNT(*) FROM participants WHERE event_id = $1 AND source LIKE 'online%') AS total_online,
+      (SELECT COUNT(*) FROM participants WHERE event_id = $1 AND source = 'offline') AS total_offline,
+      (SELECT COUNT(*) FROM participants WHERE event_id = $1 AND paid_status = 'Paid') AS total_paid,
+      (SELECT COUNT(*) FROM participants WHERE event_id = $1 AND paid_status = 'Unpaid') AS total_unpaid
   `;
 
-  const rolesQuery = `
-    SELECT role, COUNT(*) AS count
-    FROM participants
-    WHERE event_id = $1 AND role IS NOT NULL
-    GROUP BY role
-  `;
-
-  const daywiseQuery = `
-    SELECT DATE(registered_at) AS date, COUNT(*) AS count
-    FROM participants
-    WHERE event_id = $1
-    GROUP BY DATE(registered_at)
-    ORDER BY date ASC
-  `;
-
-  const recentQuery = `
-    SELECT * FROM participants
-    WHERE event_id = $1
-    ORDER BY id DESC
-    LIMIT 5
-  `;
+  const rolesQuery = `SELECT role, COUNT(*) AS count FROM participants WHERE event_id = $1 AND role IS NOT NULL GROUP BY role`;
+  const daywiseQuery = `SELECT DATE(registered_at) AS date, COUNT(*) AS count FROM participants WHERE event_id = $1 GROUP BY DATE(registered_at) ORDER BY date ASC`;
+  const recentQuery = `SELECT * FROM participants WHERE event_id = $1 ORDER BY id DESC LIMIT 5`;
 
   const client = new Client({
-    host: config.host,
-    port: config.port,
-    user: config.user,
-    password: config.password,
-    database: config.dbName,
+    host: config.host, port: config.port, user: config.user,
+    password: config.password, database: config.dbName,
   });
   await client.connect();
 
@@ -474,6 +465,7 @@ async function getDashboardStats(config, eventId) {
     await client.end();
   }
 }
+
 
 // --- Get sessions for an event ---
 async function getSessions(config, eventId) {
@@ -625,7 +617,7 @@ async function getEventRoles(config, eventId) {
       ? rolesData.filter(role => role.enabled === true) 
       : [];
     
-    console.log(`Found ${enabledRoles.length} enabled roles for event ${eventId}:`, enabledRoles);
+    // console.log(`Found ${enabledRoles.length} enabled roles for event ${eventId}:`, enabledRoles);
     return enabledRoles;
 
   } catch (error) {
@@ -637,17 +629,30 @@ async function getEventRoles(config, eventId) {
 }
 
 async function addBulkParticipants(config, eventId, participants) {
+    const pool = getPool(config);
     const results = { inserted: 0, skipped: 0, errors: 0 };
-    const eventRoles = await getEventRoles(config, eventId); // Fetch roles for validation
+    const eventRoles = await getEventRoles(config, eventId);
 
     for (const p of participants) {
         try {
-            // Validate the role from the spreadsheet against the event's allowed roles
+            // 1. Basic validation
             const roleObj = eventRoles.find(r => r.name === p.role && r.enabled);
             if (!p.name || !roleObj) {
                 results.errors++;
                 continue;
             }
+
+            // 2. Proactive duplicate check
+            if (p.email || p.phone) {
+                const checkQuery = `SELECT id FROM participants WHERE event_id = $1 AND (email = $2 OR phone = $3)`;
+                const existing = await pool.query(checkQuery, [eventId, p.email || null, p.phone || null]);
+                if (existing.rows.length > 0) {
+                    results.skipped++;
+                    continue; // Skip this participant
+                }
+            }
+            
+            // 3. If no duplicate, proceed with insertion
             const regno = await getNextRegNo(config, eventId, roleObj.code);
             const payload = {
                 event_id: eventId,
@@ -660,12 +665,13 @@ async function addBulkParticipants(config, eventId, participants) {
                 designation: p.designation || null,
                 country: p.country || null,
                 paidStatus: p.paidStatus || 'Unpaid',
-                source: 'Online',
+                source: 'online-bulk',
                 registered_at: new Date().toISOString()
             };
             await addParticipant(config, payload);
             results.inserted++;
         } catch (err) {
+            // Fallback for database-level unique constraint errors
             if (err.code === '23505') { // PostgreSQL unique violation
                 results.skipped++;
             } else {
@@ -673,6 +679,8 @@ async function addBulkParticipants(config, eventId, participants) {
             }
         }
     }
+    // Release the pool connection if it was created
+    if (pool) await pool.end();
     return results;
 }
 
@@ -689,41 +697,24 @@ async function updateParticipant(config, id, data) {
 }
 
 async function getParticipants(config, eventId, filters = {}) {
-    if (!eventId) return { success: false, participants: [], message: "Event ID missing" };
-
     const pool = getPool(config);
     try {
-        let query = 'SELECT id, regno, name, email, phone, role FROM participants WHERE event_id = $1';
-        const values = [eventId]; // eventId is already a valid number from IPC
-        let idx = 2;
-
-        // Add filters dynamically
-        if (filters.regno) {
-            query += ` AND regno ILIKE $${idx++}`;
-            values.push(`%${filters.regno}%`);
+        let queryStr = `SELECT * FROM participants WHERE event_id = $1`;
+        const params = [eventId];
+        let paramIndex = 2;
+        for (const key in filters) {
+            if (filters[key]) {
+                queryStr += ` AND ${key} ILIKE $${paramIndex++}`;
+                params.push(`%${filters[key]}%`);
+            }
         }
-        if (filters.name) {
-            query += ` AND name ILIKE $${idx++}`;
-            values.push(`%${filters.name}%`);
-        }
-        if (filters.email) {
-            query += ` AND email ILIKE $${idx++}`;
-            values.push(`%${filters.email}%`);
-        }
-        if (filters.phone) {
-            query += ` AND phone ILIKE $${idx++}`;
-            values.push(`%${filters.phone}%`);
-        }
-        if (filters.role) {
-            query += ` AND role = $${idx++}`;
-            values.push(filters.role);
-        }
-
-        const res = await pool.query(query, values);
-        return { success: true, participants: res.rows };
-    } catch (err) {
-        console.error("Error fetching participants (Postgres):", err);
-        return { success: false, participants: [], message: err.message };
+        queryStr += ` ORDER BY id DESC`;
+        const result = await pool.query(queryStr, params);
+        // Return the data in the format the frontend expects
+        return { success: true, participants: result.rows };
+    } catch (error) {
+        console.error("Error fetching participants from server DB:", error);
+        return { success: false, message: error.message, participants: [] };
     } finally {
         await pool.end();
     }
@@ -775,8 +766,108 @@ async function getParticipantsByIds(config, eventId, ids) {
     return result.rows;
 }
 
+// ******** ADDED FUNCTIONS FOR DYNAMIC PRINTING ********
+
+async function getEventById(config, eventId) {
+    if (!eventId) return null;
+    const pool = getPool(config);
+    try {
+        const res = await pool.query('SELECT * FROM events WHERE id = $1', [eventId]);
+        // Postgres returns JSONB columns as objects, no parsing needed.
+        return res.rows[0] || null;
+    } catch (error) {
+        console.error("Error fetching event by ID from server DB:", error);
+        return null;
+    } finally {
+        await pool.end();
+    }
+}
+
+async function getTemplateById(config, templateId) {
+    if (!templateId) return null;
+    const pool = getPool(config);
+    try {
+        const res = await pool.query('SELECT * FROM print_templates WHERE id = $1', [templateId]);
+        // Postgres returns JSONB columns as objects, no parsing needed.
+        return res.rows[0] || null;
+    } catch (error) {
+        console.error("Error fetching template by ID from server DB:", error);
+        return null;
+    } finally {
+        await pool.end();
+    }
+}
+
+/* ==============================
+  CHECK-IN MANAGEMENT
+============================== */
+async function addCheckIn(config, eventId, participantId, sessionId) {
+    const pool = getPool(config);
+    try {
+        await pool.query('BEGIN');
+
+        // 1. Get the session's check-in limit (defaults to 1 if not set)
+        const sessionRes = await pool.query('SELECT max_checkins FROM sessions WHERE id = $1', [sessionId]);
+        const maxCheckins = sessionRes.rows[0]?.max_checkins || 1;
+
+        // 2. Count existing check-ins for this participant and session
+        const countRes = await pool.query(
+            'SELECT COUNT(*) FROM check_ins WHERE participant_id = $1 AND session_id = $2',
+            [participantId, sessionId]
+        );
+        const existingCheckinCount = parseInt(countRes.rows[0].count, 10);
+
+        // 3. If the limit is reached, return the specific status
+        if (existingCheckinCount >= maxCheckins) {
+            await pool.query('COMMIT'); // Commit transaction before returning
+            return { success: true, limit_reached: true };
+        }
+
+        // 4. Otherwise, insert the new check-in record
+        await pool.query(
+            'INSERT INTO check_ins (event_id, participant_id, session_id, check_in_time) VALUES ($1, $2, $3, NOW())',
+            [eventId, participantId, sessionId]
+        );
+
+        await pool.query('COMMIT');
+        return { success: true };
+
+    } catch (error) {
+        await pool.query('ROLLBACK');
+        console.error("Error in serverDb.addCheckIn:", error);
+        return { success: false, message: error.message };
+    } finally {
+        await pool.end();
+    }
+}
+
+async function getCheckInsBySession(config, sessionId) {
+    if (!sessionId) {
+        return [];
+    }
+    const pool = getPool(config);
+    try {
+        const result = await pool.query(
+            `SELECT p.id, p.regno, p.name, c.check_in_time
+             FROM check_ins c
+             JOIN participants p ON c.participant_id = p.id
+             WHERE c.session_id = $1
+             ORDER BY c.check_in_time DESC`,
+            [sessionId]
+        );
+        return result.rows;
+    } catch (error) {
+        console.error("Error in serverDb.getCheckInsBySession:", error);
+        return []; // Return empty array on error
+    } finally {
+        await pool.end();
+    }
+}
+
+
 module.exports = { 
-    createServerDatabase, 
+    createServerDatabase,
+    query, 
     authenticateServerUser, 
     clearAndSeedDataFromServer,
     getDashboardStats, 
@@ -796,5 +887,9 @@ module.exports = {
     getNextRegNo,
     getParticipantsByIds,
     addBulkParticipants,
-    getEventRoles, // *** ADDED TO EXPORTS ***
+    getEventRoles,
+    getEventById,
+    getTemplateById,
+    addCheckIn,
+    getCheckInsBySession
 };

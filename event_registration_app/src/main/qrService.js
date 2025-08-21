@@ -1,9 +1,9 @@
+require('dotenv').config();
 const jwt = require('jsonwebtoken');
 const QRCode = require('qrcode');
 
 // This MUST be a secure, consistent secret key.
-const JWT_SECRET = 'your-super-secret-key-that-is-long-and-secure';
-
+const JWT_SECRET = process.env.QR_JWT_SECRET || 'a-default-fallback-for-development';
 /**
  * Generates a signed JWT containing the participant's registration number.
  * @param {object} participant - The participant object, must contain a 'regno' property.

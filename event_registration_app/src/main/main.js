@@ -7,6 +7,7 @@ const Store = require('electron-store').default;
 const os = require('os');
 const jwt = require('jsonwebtoken');
 const fetch = (...args) => import('node-fetch').then(({ default: fetch }) => fetch(...args));
+const scannerService = require('./scannerService');
 
 // DB modules
 const localDb = require('./local-db');
@@ -22,7 +23,6 @@ let mainWindow;
 // MAIN LIFECYCLE
 // =================================================================
 
-// THIS IS THE NEW, CRITICAL FUNCTION TO FIX THE RECONNECTION ISSUE
 async function initializeDatabaseConnection() {
   const config = store.get('dbConfig');
   if (!config || !config.mode) {
@@ -32,27 +32,21 @@ async function initializeDatabaseConnection() {
 
   console.log(`Found saved config for mode: '${config.mode}'. Attempting to connect...`);
   try {
-    let result;
     if (config.mode === 'local') {
-      // For local DB, we just need to re-initialize the connection object
-      result = await localDb.createLocalDatabase({
+      // The bug was here. We now correctly pass the saved folderPath and dbName.
+      if (!config.folderPath || !config.dbName) {
+          throw new Error("Local DB config is incomplete. Missing folderPath or dbName.");
+      }
+      await localDb.createLocalDatabase({
         folderPath: config.folderPath,
         dbName: config.dbName,
       });
-    } else { // 'server' mode
-      // For server DB, we don't need to create tables again, just verify the connection exists
-      result = { success: true }; // Assume success, subsequent calls will create pools
+    } else {
       console.log('Server mode configured. Connections will be established on demand.');
     }
-
-    if (result.success) {
-      console.log('✅ Database connection established successfully on startup.');
-    } else {
-      throw new Error(result.error || 'Unknown error during connection.');
-    }
+    console.log('✅ Database connection re-established successfully on startup.');
   } catch (error) {
     console.error('🔴 FAILED to connect to the database on startup:', error.message);
-    // You might want to alert the user in the renderer process about this failure
   }
 }
 
@@ -110,12 +104,17 @@ ipcMain.handle('select-local-db-folder', async () => {
   return { success: true, path: filePaths[0] };
 });
 
+// ******** THIS IS THE CORRECTED FUNCTION ********
 ipcMain.handle('create-local-db', async (_, settings) => {
   try {
     const result = await localDb.createLocalDatabase(settings);
     if (result.success) {
-        // Also save the config when a local db is successfully created
-        store.set('dbConfig', { ...settings, mode: 'local' });
+        // The bug was here. We must now save the complete configuration.
+        store.set('dbConfig', {
+            mode: 'local',
+            folderPath: settings.folderPath,
+            dbName: settings.dbName,
+        });
     }
     return result;
   } catch (err) {
@@ -343,20 +342,53 @@ ipcMain.handle('get-dashboard-stats', async (_, eventId) => {
 
 ipcMain.handle('get-participants', async (event, data) => {
     try {
+        // Explicitly destructure the eventId and filters from the incoming 'data' object.
         const { eventId, filters } = data;
-        if (!eventId || isNaN(eventId)) throw new Error("Invalid event ID");
 
         const config = store.get('dbConfig');
-        if (!config) throw new Error("Database not configured.");
+        if (!config) {
+            throw new Error("Database not configured.");
+        }
 
         if (config.mode === 'server') {
+            // Pass eventId and filters as separate arguments.
             return await serverDb.getParticipants(config, eventId, filters);
         } else {
+            // Pass eventId and filters as separate arguments.
             return await localDb.getLocalParticipants(eventId, filters);
         }
-    } catch (err) {
+    } catch (err)
+    {
         console.error("Error in get-participants handler:", err);
         return { success: false, message: err.message, participants: [] };
+    }
+});
+
+// ******** ADDED HANDLERS FOR DYNAMIC PRINTING ********
+
+ipcMain.handle('get-event-by-id', async (_, eventId) => {
+    try {
+        const config = store.get('dbConfig');
+        if (!config) throw new Error("Database not configured.");
+        const event = config.mode === 'server'
+            ? await serverDb.getEventById(config, eventId)
+            : await localDb.getEventById(eventId);
+        return { success: true, event };
+    } catch (err) {
+        return { success: false, message: err.message };
+    }
+});
+
+ipcMain.handle('get-template-by-id', async (_, templateId) => {
+    try {
+        const config = store.get('dbConfig');
+        if (!config) throw new Error("Database not configured.");
+        const template = config.mode === 'server'
+            ? await serverDb.getTemplateById(config, templateId)
+            : await localDb.getTemplateById(templateId);
+        return { success: true, template };
+    } catch (err) {
+        return { success: false, message: err.message };
     }
 });
 
@@ -438,7 +470,7 @@ ipcMain.handle('get-event-roles', async (_, eventId) => {
             roles = await localDb.getEventRoles(eventId);
         }
         
-        console.log(`Returning ${roles.length} roles for event ${eventId}`);
+        // console.log(`Returning ${roles.length} roles for event ${eventId}`);
         return { success: true, roles };
     } catch (err) {
         console.error("Error in get-event-roles handler:", err);
@@ -481,22 +513,31 @@ ipcMain.handle('process-check-in', async (_, { qrData, sessionId, eventId }) => 
         const config = store.get('dbConfig');
         if (!config) throw new Error("Database not configured.");
 
+        // 1. Verify the QR code to get the registration number
         const verificationResult = scannerService.verifyToken(qrData);
+        // If token is invalid, assume the raw data is the registration number
         let regno = verificationResult.success ? verificationResult.payload.regno : qrData.trim();
 
+        // 2. Find the participant in the database
         const participant = config.mode === 'server'
             ? await serverDb.getParticipantByRegno(config, eventId, regno)
             : await localDb.getParticipantByRegno(eventId, regno);
         
         if (!participant) {
-            throw new Error(`Participant with Reg. No. '${regno}' not found.`);
+            throw new Error(`Participant with Registration No. '${regno}' not found for this event.`);
         }
 
+        // 3. Attempt to add the check-in
         const checkInResult = config.mode === 'server'
             ? await serverDb.addCheckIn(config, eventId, participant.id, sessionId)
             : await localDb.addCheckIn(eventId, participant.id, sessionId);
         
-        return { ...checkInResult, participant };
+        // 4. Return the combined result to the frontend
+        return { 
+            ...checkInResult, // This will include { success, limit_reached?, already_checked_in? }
+            participant        // Include the participant details for the success message
+        };
+
     } catch (err) {
         return { success: false, message: err.message };
     }

@@ -64,7 +64,7 @@ const ServerDbSetup = ({ onSetupComplete, onGoBack }) => {
             value={dbType}
             onChange={(e) => {
               setDbType(e.target.value);
-              setPort(e.target.value === 'mysql' ? 3306 : 5432);
+              setPort(e.target.value === 'postgres' ? 5432 : 3306);
             }}
           >
             <MenuItem value="postgres">PostgreSQL</MenuItem>

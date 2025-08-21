@@ -1,8 +1,8 @@
+require('dotenv').config();
 const jwt = require('jsonwebtoken');
 
 // This MUST be the same secret key used in qrService.js
-const JWT_SECRET = 'your-super-secret-key-that-is-long-and-secure';
-
+const JWT_SECRET = process.env.QR_JWT_SECRET || 'a-default-fallback-for-development';
 /**
  * Verifies the signature of a JWT and decodes it.
  * @param {string} token - The JWT scanned from the QR code.

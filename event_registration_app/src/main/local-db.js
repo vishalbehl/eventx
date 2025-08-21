@@ -6,6 +6,12 @@ const bcrypt = require('bcryptjs');
 
 let db = null;
 
+async function hashPassword(password) {
+  if (!password) return null;
+  const salt = await bcrypt.genSalt(10);
+  return await bcrypt.hash(password, salt);
+}
+
 function createLocalDatabase({ folderPath, dbName }) {
   if (!folderPath || !dbName) {
     throw new Error('Folder path and database name must be provided for local database.');
@@ -34,6 +40,8 @@ function createLocalDatabase({ folderPath, dbName }) {
   });
 }
 
+
+// ******** THIS IS THE UPDATED AND COMPLETED SCHEMA ********
 async function createTables() {
   const schema = `
   CREATE TABLE IF NOT EXISTS users (
@@ -42,30 +50,33 @@ async function createTables() {
     password_hash TEXT,
     role TEXT,
     assigned_event_id INTEGER,
-    assigned_kiosk_name TEXT
-
+    created_at TEXT,
+    updated_at TEXT,
+    needs_sync INTEGER DEFAULT 0 -- Using INTEGER for boolean (0=false, 1=true)
   );
 
   CREATE TABLE IF NOT EXISTS events (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    id INTEGER PRIMARY KEY, -- Not autoincrement, ID comes from central server
     name TEXT,
     description TEXT,
     start_date TEXT,
     end_date TEXT,
     created_at TEXT,
+    updated_at TEXT,
     organiser_name TEXT,
     organiser_email TEXT,
     organiser_phone TEXT,
     badge_template_id INTEGER,
     certificate_template_id INTEGER,
-    roles TEXT,
-    print_settings TEXT,
-    local_admin_ids TEXT,
-    last_kiosk_sync_at TEXT
+    roles TEXT, -- Storing JSON as TEXT
+    print_settings TEXT, -- Storing JSON as TEXT
+    local_admin_ids TEXT, -- Storing Array as TEXT
+    last_kiosk_sync_at TEXT,
+    needs_sync INTEGER DEFAULT 0
   );
 
   CREATE TABLE IF NOT EXISTS participants (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    id INTEGER PRIMARY KEY, -- Not autoincrement, ID comes from central server
     event_id INTEGER,
     regno TEXT,
     name TEXT,
@@ -78,16 +89,23 @@ async function createTables() {
     country TEXT,
     paid_status TEXT,
     registered_at TEXT,
-    FOREIGN KEY(event_id) REFERENCES events(id)
+    updated_at TEXT,
+    needs_sync INTEGER DEFAULT 0,
+    FOREIGN KEY(event_id) REFERENCES events(id) ON DELETE CASCADE,
+    UNIQUE(event_id, email),
+    UNIQUE(event_id, phone)
   );
 
   CREATE TABLE IF NOT EXISTS sessions (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    id INTEGER PRIMARY KEY, -- Not autoincrement, ID comes from central server
     event_id INTEGER,
     session_date TEXT,
     name TEXT,
+    created_at TEXT,
+    updated_at TEXT,
     max_checkins INTEGER,
-    FOREIGN KEY(event_id) REFERENCES events(id)
+    needs_sync INTEGER DEFAULT 0,
+    FOREIGN KEY(event_id) REFERENCES events(id) ON DELETE CASCADE
   );
 
   CREATE TABLE IF NOT EXISTS check_ins (
@@ -96,22 +114,39 @@ async function createTables() {
     participant_id INTEGER,
     session_id INTEGER,
     check_in_time TEXT,
-    FOREIGN KEY(participant_id) REFERENCES participants(id),
-    FOREIGN KEY(session_id) REFERENCES sessions(id)
+    updated_at TEXT,
+    needs_sync INTEGER DEFAULT 0,
+    FOREIGN KEY(participant_id) REFERENCES participants(id) ON DELETE CASCADE,
+    FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
   );
   
   CREATE TABLE IF NOT EXISTS print_templates (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    id INTEGER PRIMARY KEY, -- Not autoincrement, ID comes from central server
     template_name TEXT,
-    template_data TEXT
+    template_data TEXT, -- Storing JSON as TEXT
+    created_at TEXT,
+    updated_at TEXT,
+    needs_sync INTEGER DEFAULT 0
   );
   `;
 
   return new Promise((resolve, reject) => {
     if (!db) return reject(new Error("Database not initialized"));
-    db.exec(schema, (err) => {
-      if (err) reject(err);
-      else resolve(true);
+    db.exec(schema, async (err) => {
+      if (err) {
+        return reject(err);
+      }
+      // Add default admin user after tables are created
+      try {
+        const adminPassword = await hashPassword('admin123');
+        const sql = `INSERT OR IGNORE INTO users (username, password_hash, role) VALUES (?, ?, ?)`;
+        db.run(sql, ['admin', adminPassword, 'admin'], (runErr) => {
+          if (runErr) return reject(runErr);
+          resolve(true);
+        });
+      } catch (hashErr) {
+        reject(hashErr);
+      }
     });
   });
 }
@@ -233,24 +268,27 @@ async function getLocalDashboardStats(eventId) {
         return { stats: {}, roles: [], daywise: [], recent: [] };
     }
 
-    const statsQuery = `SELECT 
-        COUNT(*) as total_participants,
+    // This query is now corrected to count DISTINCT participants and not join with check_ins
+    const statsQuery = `
+      SELECT
+        (SELECT COUNT(*) FROM participants WHERE event_id = ?) as total_participants,
+        (SELECT COUNT(DISTINCT participant_id) FROM check_ins WHERE event_id = ?) as total_arrived,
         SUM(CASE WHEN paid_status = 'Paid' THEN 1 ELSE 0 END) as total_paid,
         SUM(CASE WHEN paid_status = 'Unpaid' THEN 1 ELSE 0 END) as total_unpaid,
-        SUM(CASE WHEN source = 'online' THEN 1 ELSE 0 END) as total_online,
-        SUM(CASE WHEN source = 'offline' THEN 1 ELSE 0 END) as total_offline,
-        (SELECT COUNT(DISTINCT participant_id) FROM check_ins WHERE event_id = p.event_id) as total_arrived
-      FROM participants p WHERE p.event_id = ?`;
-      
+        SUM(CASE WHEN source LIKE 'online%' THEN 1 ELSE 0 END) as total_online,
+        SUM(CASE WHEN source = 'offline' THEN 1 ELSE 0 END) as total_offline
+      FROM participants WHERE event_id = ?`;
+
     const rolesQuery = `SELECT role, COUNT(*) as count FROM participants WHERE event_id = ? GROUP BY role`;
     const daywiseQuery = `SELECT DATE(registered_at) as date, COUNT(*) as count FROM participants WHERE event_id = ? GROUP BY DATE(registered_at) ORDER BY date`;
     const recentQuery = `SELECT * FROM participants WHERE event_id = ? ORDER BY registered_at DESC LIMIT 5`;
 
-    const stats = await getQuery(statsQuery, [targetEventId]);
+    // The query now takes the eventId three times
+    const stats = await getQuery(statsQuery, [targetEventId, targetEventId, targetEventId]);
     const roles = await allQuery(rolesQuery, [targetEventId]);
     const daywise = await allQuery(daywiseQuery, [targetEventId]);
     const recent = await allQuery(recentQuery, [targetEventId]);
-    
+
     return { stats, roles, daywise, recent };
 }
 
@@ -265,32 +303,23 @@ async function getLocalSessions(eventId) {
 }
 
 async function getLocalParticipants(eventId, filters = {}) {
-    if (!eventId) return { success: false, participants: [], message: "Event ID missing" };
-
     try {
-        let query = `SELECT id, regno, name, email, phone, role FROM participants WHERE event_id = ?`;
+        let queryStr = `SELECT * FROM participants WHERE event_id = ?`;
         const params = [eventId];
-
-        // ... filter logic remains the same ...
-        if (filters.regno) {
-            query += ` AND regno LIKE ?`;
-            params.push(`%${filters.regno}%`);
+        for (const key in filters) {
+            if (filters[key]) {
+                // For SQLite, use the LIKE operator and add wildcards
+                queryStr += ` AND ${key} LIKE ?`;
+                params.push(`%${filters[key]}%`);
+            }
         }
-        if (filters.name) {
-            query += ` AND name LIKE ?`;
-            params.push(`%${filters.name}%`);
-        }
-        if (filters.role) {
-            query += ` AND role = ?`;
-            params.push(filters.role);
-        }
-
-        // Use allQuery to get all rows, not just the first one
-        const rows = await allQuery(query, params); 
+        queryStr += ` ORDER BY id DESC`;
+        const rows = await allQuery(queryStr, params);
+        // Return the data in the format the frontend expects
         return { success: true, participants: rows };
-    } catch (err) {
-        console.error("Error fetching participants (SQLite):", err);
-        return { success: false, participants: [], message: err.message };
+    } catch (error) {
+        console.error("Error fetching participants from local DB:", error);
+        return { success: false, message: error.message, participants: [] };
     }
 }
 
@@ -305,19 +334,30 @@ async function addLocalParticipant(data) {
   return { id: result.lastID, ...data };
 }
 
-// ADD this new function for bulk uploads
 async function addBulkParticipants(eventId, participants) {
     const results = { inserted: 0, skipped: 0, errors: 0 };
-    const eventRoles = await getEventRoles(eventId); // Fetch roles for validation
+    const eventRoles = await getEventRoles(eventId);
 
     for (const p of participants) {
         try {
-            // Validate the role from the spreadsheet against the event's allowed roles
+            // 1. Basic validation
             const roleObj = eventRoles.find(r => r.name === p.role && r.enabled);
             if (!p.name || !roleObj) {
                 results.errors++;
                 continue;
             }
+
+            // 2. Proactive duplicate check
+            if (p.email || p.phone) {
+                const checkQuery = `SELECT id FROM participants WHERE event_id = ? AND (email = ? OR phone = ?)`;
+                const existing = await getQuery(checkQuery, [eventId, p.email || null, p.phone || null]);
+                if (existing) {
+                    results.skipped++;
+                    continue; // Skip this participant
+                }
+            }
+
+            // 3. If no duplicate, proceed with insertion
             const regno = await getNextRegNo(eventId, roleObj.code);
             const payload = {
                 event_id: eventId,
@@ -330,12 +370,13 @@ async function addBulkParticipants(eventId, participants) {
                 designation: p.designation || null,
                 country: p.country || null,
                 paidStatus: p.paidStatus || 'Unpaid',
-                source: 'Online',
+                source: 'online-bulk',
                 registered_at: new Date().toISOString()
             };
             await addLocalParticipant(payload);
             results.inserted++;
         } catch (err) {
+            // This catch block will now correctly handle any database-level unique constraint errors as a fallback
             if (err.message.includes('UNIQUE constraint failed')) {
                 results.skipped++;
             } else {
@@ -346,23 +387,39 @@ async function addBulkParticipants(eventId, participants) {
     return results;
 }
 
+
 // --- SEEDING ---
 async function clearAndSeedDataFromServer(data) {
   try {
+    // 1. Clear all existing event-related data
     await runQuery('DELETE FROM check_ins');
     await runQuery('DELETE FROM participants');
     await runQuery('DELETE FROM sessions');
     await runQuery('DELETE FROM events');
+    await runQuery('DELETE FROM print_templates');
 
-    const { event, participants, sessions } = data;
+    const { event, participants, sessions, templates } = data;
 
+    // 2. Insert the main event details
     if (event) {
-        const eventKeys = Object.keys(event).join(', ');
-        const eventValues = Object.values(event);
-        const placeholders = eventValues.map(() => '?').join(', ');
-        await runQuery(`INSERT INTO events (${eventKeys}) VALUES (${placeholders})`, eventValues);
+      const eventToInsert = { ...event };
+      delete eventToInsert.needs_sync; // Column doesn't exist in local DB
+
+      // Ensure JSON fields are stringified for SQLite
+      if (typeof eventToInsert.roles !== 'string') {
+        eventToInsert.roles = JSON.stringify(eventToInsert.roles || []);
+      }
+      if (typeof eventToInsert.print_settings !== 'string') {
+        eventToInsert.print_settings = JSON.stringify(eventToInsert.print_settings || {});
+      }
+
+      const eventKeys = Object.keys(eventToInsert).join(', ');
+      const eventValues = Object.values(eventToInsert);
+      const placeholders = eventValues.map(() => '?').join(', ');
+      await runQuery(`INSERT INTO events (${eventKeys}) VALUES (${placeholders})`, eventValues);
     }
 
+    // 3. Insert all sessions for the event
     if (sessions && sessions.length > 0) {
       for (const s of sessions) {
         const sKeys = Object.keys(s).join(', ');
@@ -372,6 +429,7 @@ async function clearAndSeedDataFromServer(data) {
       }
     }
 
+    // 4. Insert all participants for the event
     if (participants && participants.length > 0) {
       for (const p of participants) {
         const pKeys = Object.keys(p).join(', ');
@@ -381,13 +439,28 @@ async function clearAndSeedDataFromServer(data) {
       }
     }
 
+    // 5. ******** THIS IS THE MISSING PART ********
+    // Insert all print templates
+    if (templates && templates.length > 0) {
+        for (const t of templates) {
+            // SQLite stores JSON as a string, so ensure it's stringified
+            const templateDataString = typeof t.template_data === 'string'
+                ? t.template_data
+                : JSON.stringify(t.template_data);
+
+            await runQuery(
+                'INSERT INTO print_templates (id, template_name, template_data) VALUES (?, ?, ?)',
+                [t.id, t.template_name, templateDataString]
+            );
+        }
+    }
+
     return { success: true };
   } catch (err) {
     console.error('Local DB Seeding failed:', err);
     return { success: false, message: err.message };
   }
 }
-
 // --- DATABASE UTILS ---
 async function isDatabaseSeeded() {
   if (!db) {
@@ -442,6 +515,78 @@ async function getEventRoles(eventId) {
   }
 }
 
+// ******** ADDED FUNCTIONS FOR DYNAMIC PRINTING ********
+
+async function getEventById(eventId) {
+    if (!eventId) return null;
+    return await getQuery('SELECT * FROM events WHERE id = ?', [eventId]);
+}
+
+async function getTemplateById(templateId) {
+    if (!templateId) return null;
+    const template = await getQuery('SELECT * FROM print_templates WHERE id = ?', [templateId]);
+    // SQLite stores JSON as text, so we need to parse it
+    if (template && typeof template.template_data === 'string') {
+        try {
+            template.template_data = JSON.parse(template.template_data);
+        } catch (e) {
+            console.error("Failed to parse template data from local DB:", e);
+            template.template_data = null; // Set to null if invalid
+        }
+    }
+    return template;
+}
+
+async function addCheckIn(eventId, participantId, sessionId) {
+    try {
+        // 1. Get the session's check-in limit (defaults to 1 if not set)
+        const session = await getQuery('SELECT max_checkins FROM sessions WHERE id = ?', [sessionId]);
+        const maxCheckins = session?.max_checkins || 1;
+
+        // 2. Count how many times this participant has already checked into this session
+        const countResult = await getQuery(
+            'SELECT COUNT(*) as count FROM check_ins WHERE participant_id = ? AND session_id = ?',
+            [participantId, sessionId]
+        );
+        const existingCheckinCount = countResult?.count || 0;
+
+        // 3. If the limit is reached, return the specific status
+        if (existingCheckinCount >= maxCheckins) {
+            return { success: true, limit_reached: true };
+        }
+
+        // 4. Otherwise, insert the new check-in record
+        await runQuery(
+            'INSERT INTO check_ins (event_id, participant_id, session_id, check_in_time) VALUES (?, ?, ?, ?)',
+            [eventId, participantId, sessionId, new Date().toISOString()]
+        );
+
+        return { success: true };
+    } catch (error) {
+        console.error("Error in localDb.addCheckIn:", error);
+        return { success: false, message: error.message };
+    }
+}
+async function getCheckInsBySession(sessionId) {
+    if (!sessionId) {
+        return [];
+    }
+    try {
+        // This query joins check_ins with participants to get participant details for the list.
+        const rows = await allQuery(`
+            SELECT p.id, p.regno, p.name, c.check_in_time
+            FROM check_ins c
+            JOIN participants p ON c.participant_id = p.id
+            WHERE c.session_id = ?
+            ORDER BY c.check_in_time DESC
+        `, [sessionId]);
+        return rows;
+    } catch (error) {
+        console.error("Error in localDb.getCheckInsBySession:", error);
+        return []; // Return empty array on error
+    }
+}
+
 
 module.exports = {
   createLocalDatabase,
@@ -461,5 +606,9 @@ module.exports = {
   getLocalParticipants,
   addLocalParticipant,
   addBulkParticipants,
-  getEventRoles
+  getEventRoles,
+  getEventById,
+  getTemplateById,
+  addCheckIn,
+  getCheckInsBySession
 };

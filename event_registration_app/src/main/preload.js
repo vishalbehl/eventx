@@ -31,7 +31,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // --- Generic Data Access (Mode-Aware) ---
   getDashboardStats: (eventId) => ipcRenderer.invoke('get-dashboard-stats', eventId),
   getSessions: (eventId) => ipcRenderer.invoke('get-sessions', eventId),
-  getParticipants: (eventId, filters) => ipcRenderer.invoke('get-participants', { eventId, filters }),
+  getParticipants: (payload) => ipcRenderer.invoke('get-participants', payload),
   getNextRegNo: (eventId, roleCode) => ipcRenderer.invoke('get-next-regno', { eventId, roleCode }),
 
   addParticipant: (data) => ipcRenderer.invoke('add-participant', data),
@@ -40,7 +40,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
   addBulkParticipants: (eventId, participants) => ipcRenderer.invoke('add-bulk-participants', eventId, participants),
   getEventRoles: (eventId) => ipcRenderer.invoke('get-event-roles', eventId),
 
+  // ******** ADDED FUNCTIONS FOR DYNAMIC PRINTING ********
+  getEventById: (eventId) => ipcRenderer.invoke('get-event-by-id', eventId),
+  getTemplateById: (templateId) => ipcRenderer.invoke('get-template-by-id', templateId),
+
   // --- QR Services ---
   generateQRToken: (participant) => ipcRenderer.invoke('generate-qr-token', participant),
   verifyQRToken: (token) => ipcRenderer.invoke('verify-qr-token', token),
+  processCheckIn: (payload) => ipcRenderer.invoke('process-check-in', payload),
+
 });
