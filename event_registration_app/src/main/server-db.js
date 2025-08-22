@@ -43,6 +43,8 @@ async function createServerDatabase(config) {
           role VARCHAR(50),
           assigned_event_id INT,
           assigned_kiosk_name VARCHAR(255),
+          allowed_ip VARCHAR(45),      
+          allowed_mac VARCHAR(17),     
           needs_sync BOOLEAN DEFAULT 0,
           created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
           updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
@@ -142,6 +144,8 @@ async function createServerDatabase(config) {
           role TEXT,
           assigned_event_id INT,
           assigned_kiosk_name TEXT,
+          allowed_ip VARCHAR(45),     
+          allowed_mac VARCHAR(17),     
           needs_sync BOOLEAN DEFAULT FALSE,
           created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
           updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -253,10 +257,30 @@ try {
 }
 }
 
+async function updateKioskHeartbeat(config, hostname, ipAddress) {
+    const pool = getPool(config);
+    // This query performs an "upsert".
+    // It tries to INSERT a new row. If that fails because the hostname
+    // already exists (ON CONFLICT), it will UPDATE the existing row instead.
+    const query = `
+        INSERT INTO active_kiosks (hostname, ip_address, last_seen)
+        VALUES ($1, $2, NOW())
+        ON CONFLICT (hostname)
+        DO UPDATE SET
+            ip_address = EXCLUDED.ip_address,
+            last_seen = NOW();
+    `;
+    try {
+        await pool.query(query, [hostname, ipAddress]);
+    } finally {
+        await pool.end();
+    }
+}
+
 // --- User Management ---
 async function getUsers(config) {
   const pool = getPool(config);
-  const res = await pool.query('SELECT id, username, role, assigned_event_id, assigned_kiosk_name FROM users ORDER BY id');
+  const res = await pool.query('SELECT id, username, role, assigned_event_id, assigned_kiosk_name, allowed_ip, allowed_mac FROM users ORDER BY id');
   await pool.end();
   return res.rows;
 }
@@ -301,46 +325,62 @@ async function recordUserLogin(config, userId, hostname) {
 }
 
 // --- Authenticate user against server DB ---
-async function authenticateServerUser(config, username, password) {
+async function authenticateServerUser(config, username, password, clientMacAddresses) { 
   const { dbType, host, port, user, dbName } = config;
   let connection;
   try {
-    if (dbType === 'mysql') {
-      connection = await mysql.createConnection({ host, port, user, password: config.password, database: dbName });
-      const [rows] = await connection.execute('SELECT * FROM users WHERE username = ?', [username]);
-      if (rows.length === 0) return { success: false, message: 'User not found' };
-      
-      const dbUser = rows[0];
-      const isValid = await bcrypt.compare(password, dbUser.password_hash);
-      if (!isValid) return { success: false, message: 'Invalid credentials' };
+    connection = new Client({ host, port, user, password: config.password, database: dbName });
+    await connection.connect();
+    
+    const res = await connection.query(
+        'SELECT id, username, role, password_hash, allowed_ip, allowed_mac FROM users WHERE username = $1',
+        [username]
+    );
+    if (res.rows.length === 0) return { success: false, message: 'User not found' };
 
-      return { success: true, user: { id: dbUser.id, username: dbUser.username, role: dbUser.role, assignedEventId: dbUser.assigned_event_id } };
+    const dbUser = res.rows[0];
 
-    } else if (dbType === 'postgres') {
-      connection = new Client({ host, port, user, password: config.password, database: dbName });
-      await connection.connect();
-      const res = await connection.query('SELECT * FROM users WHERE username = $1', [username]);
-      if (res.rows.length === 0) return { success: false, message: 'User not found' };
+    // ***** UPDATED SECURITY CHECK LOGIC *****
+    // This new block prioritizes the MAC address over the IP address.
 
-      const dbUser = res.rows[0];
-      const isValid = await bcrypt.compare(password, dbUser.password_hash);
-      if (!isValid) return { success: false, message: 'Invalid credentials' };
+    if (dbUser.allowed_mac) {
+        // 1. A MAC address is set, so we check it first.
+        const normalizedAllowedMac = dbUser.allowed_mac.replace(/[:-]/g, '').toUpperCase();
+        const normalizedClientMacs = clientMacAddresses.map(mac => mac.replace(/[:-]/g, '').toUpperCase());
 
-      return { success: true, user: { id: dbUser.id, username: dbUser.username, role: dbUser.role, assignedEventId: dbUser.assigned_event_id } };
-    } else {
-      throw new Error('Unsupported DB type');
+        if (!normalizedClientMacs.includes(normalizedAllowedMac)) {
+            return { success: false, message: 'Login not permitted. This device\'s MAC address is not authorized.' };
+        }
+        // If the MAC matches, we skip the IP check and proceed.
+
+    } else if (dbUser.allowed_ip) {
+        // 2. Only if NO MAC is set, we fall back to the IP address check.
+        const ipRes = await connection.query('SELECT inet_client_addr() AS client_ip');
+        const clientIp = ipRes.rows[0].client_ip;
+        
+        if (clientIp !== dbUser.allowed_ip) {
+            return { 
+                success: false, 
+                message: `IP Mismatch. Your IP is ${clientIp}, but the allowed IP is ${dbUser.allowed_ip}.` 
+            };
+        }
     }
+    
+    // --- Password Check (runs if all device checks pass or are not required) ---
+    const isValid = await bcrypt.compare(password, dbUser.password_hash);
+    if (!isValid) return { success: false, message: 'Invalid credentials' };
+
+    return { success: true, user: { id: dbUser.id, username: dbUser.username, role: dbUser.role, assignedEventId: dbUser.assigned_event_id } };
+
   } catch (err) {
     console.error(`Server auth error:`, err);
     return { success: false, message: err.message };
   } finally {
     if (connection) {
-        if (dbType === 'mysql') await connection.end();
-        if (dbType === 'postgres') await connection.end();
+        await connection.end();
     }
   }
 }
-
 // --- Clear and seed data from central server ---
 async function clearAndSeedDataFromServer(config, data) {
     const { event, participants, sessions, templates } = data;
@@ -684,18 +724,6 @@ async function addBulkParticipants(config, eventId, participants) {
     return results;
 }
 
-async function updateParticipant(config, id, data) {
-    const pool = getPool(config);
-    const { name, email, phone, role, company, designation, country, paidStatus } = data;
-    const result = await pool.query(
-        `UPDATE participants SET name=$1, email=$2, phone=$3, role=$4, company=$5, designation=$6, country=$7, paid_status=$8
-        WHERE id = $9 RETURNING *`,
-        [name, email, phone, role, company, designation, country, paidStatus, id]
-    );
-    await pool.end();
-    return result.rows[0];
-}
-
 async function getParticipants(config, eventId, filters = {}) {
     const pool = getPool(config);
     try {
@@ -720,22 +748,80 @@ async function getParticipants(config, eventId, filters = {}) {
     }
 }
 
+async function updateParticipant(config, id, data) {
+    const pool = getPool(config);
+    try {
+        await pool.query('BEGIN');
+
+        // 1. Get the participant's current state from the database
+        const currentUserResult = await pool.query('SELECT role, regno FROM participants WHERE id = $1', [id]);
+        const currentUser = currentUserResult.rows[0];
+
+        if (!currentUser) {
+            throw new Error(`Participant with ID ${id} not found.`);
+        }
+
+        // 2. Start with the existing registration number as the default
+        let finalRegno = currentUser.regno;
+
+        // 3. If the role has changed, generate a new registration number
+        if (currentUser.role !== data.role) {
+            const eventRoles = await getEventRoles(config, data.event_id);
+            const roleObj = eventRoles.find(r => r.name === data.role);
+            if (roleObj) {
+                // Overwrite the default with the new number
+                finalRegno = await getNextRegNo(config, data.event_id, roleObj.code);
+            }
+        }
+
+        // 4. Perform the update using the finalRegno
+        const { name, email, phone, role, company, designation, country, paidStatus } = data;
+        const result = await pool.query(
+            `UPDATE participants 
+             SET name=$1, email=$2, phone=$3, role=$4, company=$5, designation=$6, country=$7, paid_status=$8, regno=$9
+             WHERE id = $10 RETURNING *`,
+            // Use the correctly determined 'finalRegno' here
+            [name, email, phone, role, company, designation, country, paidStatus, finalRegno, id]
+        );
+
+        await pool.query('COMMIT');
+        // 5. Return the fully updated participant record
+        return result.rows[0];
+
+    } catch (err) {
+        await pool.query('ROLLBACK');
+        throw err;
+    } finally {
+        await pool.end();
+    }
+}
+
 async function getNextRegNo(config, eventId, roleCode) {
     const pool = getPool(config);
     const prefix = `${roleCode}-`;
-    const result = await pool.query(
-        `SELECT regno FROM participants
-         WHERE event_id = $1 AND regno LIKE $2
-         ORDER BY id DESC LIMIT 1`,
-        [eventId, `${prefix}%`]
-    );
-    await pool.end();
-    let nextNum = 1;
-    if (result.rows.length > 0) {
-        const lastNum = parseInt(result.rows[0].regno.split('-')[1], 10);
-        nextNum = lastNum + 1;
+
+    // This advanced SQL query finds the first missing integer in the sequence.
+    const query = `
+      WITH numbers AS (
+        -- Select all existing numbers for the given role, converting the text part to an integer
+        SELECT CAST(SUBSTRING(regno FROM POSITION('-' IN regno) + 1) AS INTEGER) AS num
+        FROM participants
+        WHERE event_id = $1 AND regno LIKE $2
+      )
+      -- Find the smallest number 'i' from a generated series (from 1 to max+1)
+      -- that is NOT IN our set of existing numbers.
+      SELECT MIN(s.i) AS next_num
+      FROM generate_series(1, (SELECT COALESCE(MAX(num), 0) + 1 FROM numbers)) AS s(i)
+      WHERE s.i NOT IN (SELECT num FROM numbers);
+    `;
+
+    try {
+        const result = await pool.query(query, [eventId, `${prefix}%`]);
+        const nextNum = result.rows[0]?.next_num || 1;
+        return `${prefix}${String(nextNum).padStart(4, '0')}`;
+    } finally {
+        await pool.end();
     }
-    return `${prefix}${String(nextNum).padStart(4, '0')}`;
 }
 
 async function getParticipantByRegno(config, eventId, regno) {
@@ -864,10 +950,37 @@ async function getCheckInsBySession(config, sessionId) {
     }
 }
 
+async function getAllCheckInsForEvent(config, eventId) {
+    if (!eventId) return [];
+    const pool = getPool(config);
+    const query = `
+      SELECT
+        c.check_in_time,
+        p.regno,
+        p.name AS participant_name,
+        p.role AS participant_role,
+        s.id AS session_id,
+        s.name AS session_name,
+        s.session_date
+      FROM check_ins c
+      JOIN participants p ON c.participant_id = p.id
+      JOIN sessions s ON c.session_id = s.id
+      WHERE c.event_id = $1
+      ORDER BY s.id, p.role, p.regno ASC
+    `;
+    try {
+        const result = await pool.query(query, [eventId]);
+        return result.rows;
+    } finally {
+        await pool.end();
+    }
+}
+
 
 module.exports = { 
     createServerDatabase,
     query, 
+    updateKioskHeartbeat,
     authenticateServerUser, 
     clearAndSeedDataFromServer,
     getDashboardStats, 
@@ -891,5 +1004,6 @@ module.exports = {
     getEventById,
     getTemplateById,
     addCheckIn,
-    getCheckInsBySession
+    getCheckInsBySession,
+    getAllCheckInsForEvent
 };

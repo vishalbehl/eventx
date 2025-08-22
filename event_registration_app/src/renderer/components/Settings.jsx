@@ -3,7 +3,7 @@ import {
     Box, TextField, Button, Typography, Paper, Alert, CircularProgress, Grid,
     AppBar, Tabs, Tab, Table, TableContainer, TableHead, TableBody, TableRow, TableCell,
     IconButton, Dialog, DialogTitle, DialogContent, DialogActions, FormControl, InputLabel, Select, MenuItem,
-    Chip, Card, CardContent, Divider
+    Chip, Card, CardContent, Divider, InputAdornment
 } from '@mui/material';
 import EditIcon from '@mui/icons-material/Edit';
 import DeleteIcon from '@mui/icons-material/Delete';
@@ -11,20 +11,19 @@ import RefreshIcon from '@mui/icons-material/Refresh';
 import CheckCircleIcon from '@mui/icons-material/CheckCircle';
 import ErrorIcon from '@mui/icons-material/Error';
 import CloudDownloadIcon from '@mui/icons-material/CloudDownload';
+import Visibility from '@mui/icons-material/Visibility';
+import VisibilityOff from '@mui/icons-material/VisibilityOff';
 
 function TabPanel({ children, value, index }) {
     return value === index ? <Box sx={{ p: 3 }}>{children}</Box> : null;
 }
 
-export default function Settings({ onConnect, isDbConnected }) {
+// ***** CHANGE 1: Add onResetApp to the component's props *****
+export default function Settings({ onConnect, isDbConnected, onResetApp }) {
     const [activeTab, setActiveTab] = useState(0);
-
-    // Database Config State
     const [config, setConfig] = useState(null);
     const [dbStatus, setDbStatus] = useState({ msg: 'Current database connection settings.', sev: 'info' });
     const [dbLoading, setDbLoading] = useState(false);
-
-    // Sync State  
     const [centralUrl, setCentralUrl] = useState(localStorage.getItem('centralServerUrl') || 'http://localhost:3001');
     const [loginForm, setLoginForm] = useState({ username: '', password: '' });
     const [loginError, setLoginError] = useState('');
@@ -35,8 +34,6 @@ export default function Settings({ onConnect, isDbConnected }) {
     const [syncLoading, setSyncLoading] = useState(false);
     const [syncStatus, setSyncStatus] = useState({ msg: 'Login to the central server to download event data.', sev: 'info' });
     const [connectionStatus, setConnectionStatus] = useState(null);
-
-    // User Management State
     const [users, setUsers] = useState([]);
     const [isUserModalOpen, setIsUserModalOpen] = useState(false);
     const [editingUser, setEditingUser] = useState(null);
@@ -44,6 +41,7 @@ export default function Settings({ onConnect, isDbConnected }) {
     const [userLoading, setUserLoading] = useState(false);
     const [userError, setUserError] = useState('');
     const [activeEventId, setActiveEventId] = useState(null);
+    const [showPassword, setShowPassword] = useState(false);
 
     useEffect(() => {
         const loadInitialData = async () => {
@@ -83,7 +81,6 @@ export default function Settings({ onConnect, isDbConnected }) {
                 centralUrl: url,
                 authToken: token
             });
-            
             if (result.success) {
                 setAvailableEvents(result.events || []);
                 setIsLoggedIn(true);
@@ -324,16 +321,21 @@ export default function Settings({ onConnect, isDbConnected }) {
                 username: user.username, 
                 role: user.role, 
                 password: '', 
-                assigned_event_id: user.assigned_event_id || activeEventId 
-              }
+                // Add the new fields
+                allowed_ip: user.allowed_ip,
+                allowed_mac: user.allowed_mac
+            }
             : { 
                 username: '', 
                 password: '', 
                 role: 'kiosk', 
-                assigned_event_id: activeEventId 
-              };
+                // Add the new fields
+                allowed_ip: '',
+                allowed_mac: ''
+            };
         setUserFormData(formData);
         setIsUserModalOpen(true);
+        setShowPassword(false);
     };
 
     const handleCloseUserModal = () => {
@@ -485,8 +487,25 @@ export default function Settings({ onConnect, isDbConnected }) {
                                 {dbLoading ? <CircularProgress size={24} /> : 'Update Configuration'}
                             </Button>
                         </Paper>
-                    </form>
-                )}
+                    </form>                )}
+
+                <Paper sx={{ p: 2, mt: 4, border: '1px solid', borderColor: 'error.main' }}>
+                    <Typography variant="h6" color="error" gutterBottom>
+                        Danger Zone
+                    </Typography>
+                    <Typography variant="body2" sx={{ mb: 2 }}>
+                        This action will completely clear your current database connection settings and log you out. 
+                        You will be returned to the initial setup screen and will need to reconfigure the connection. 
+                        This action cannot be undone.
+                    </Typography>
+                    <Button
+                        variant="contained"
+                        color="error"
+                        onClick={onResetApp}
+                    >
+                        Reset Database Configuration
+                    </Button>
+                </Paper>
             </TabPanel>
 
             <TabPanel value={activeTab} index={1}>
@@ -734,36 +753,23 @@ export default function Settings({ onConnect, isDbConnected }) {
                             <TableRow>
                                 <TableCell>Username</TableCell>
                                 <TableCell>Role</TableCell>
-                                <TableCell>Assigned Kiosk</TableCell>
+                                {/* ***** 3. ADD NEW TABLE HEADERS ***** */}
+                                <TableCell>Allowed IP</TableCell>
+                                <TableCell>Allowed MAC</TableCell>
                                 <TableCell align="right">Actions</TableCell>
                             </TableRow>
                         </TableHead>
                         <TableBody>
                             {userLoading ? (
                                 <TableRow>
-                                    <TableCell colSpan={4} align="center">
-                                        <Box sx={{ py: 2 }}>
-                                            <CircularProgress />
-                                            <Typography variant="body2" sx={{ mt: 1 }}>
-                                                Loading users...
-                                            </Typography>
-                                        </Box>
+                                    <TableCell colSpan={5} align="center">{/* Adjusted colSpan */}
+                                        <CircularProgress />
                                     </TableCell>
                                 </TableRow>
                             ) : users.length === 0 ? (
                                 <TableRow>
-                                    <TableCell colSpan={4} align="center">
-                                        <Box sx={{ py: 4 }}>
-                                            <Typography color="text.secondary" variant="h6" gutterBottom>
-                                                {userError ? 'Failed to load users' : 'No users found'}
-                                            </Typography>
-                                            <Typography variant="body2" color="text.secondary">
-                                                {userError ? 
-                                                    'There was an error loading user data from the database.' : 
-                                                    'Create your first user to get started with the system.'
-                                                }
-                                            </Typography>
-                                        </Box>
+                                    <TableCell colSpan={5} align="center">{/* Adjusted colSpan */}
+                                        No users found.
                                     </TableCell>
                                 </TableRow>
                             ) : (
@@ -777,30 +783,22 @@ export default function Settings({ onConnect, isDbConnected }) {
                                                 label={u.role} 
                                                 size="small" 
                                                 color={u.role === 'admin' ? 'primary' : 'default'}
-                                                variant="outlined"
                                             />
+                                        </TableCell>
+                                        {/* ***** 4. ADD NEW TABLE CELLS TO DISPLAY DATA ***** */}
+                                        <TableCell>
+                                            <Typography variant="body2" color="text.secondary">
+                                                {u.allowed_ip || 'Any'}
+                                            </Typography>
                                         </TableCell>
                                         <TableCell>
                                             <Typography variant="body2" color="text.secondary">
-                                                {u.assigned_kiosk_name || 'Not assigned'}
+                                                {u.allowed_mac || 'Any'}
                                             </Typography>
                                         </TableCell>
                                         <TableCell align="right">
-                                            <IconButton 
-                                                onClick={() => handleOpenUserModal(u)}
-                                                size="small"
-                                                title="Edit user"
-                                            >
-                                                <EditIcon />
-                                            </IconButton>
-                                            <IconButton 
-                                                onClick={() => handleDeleteUser(u.id)}
-                                                size="small"
-                                                title="Delete user"
-                                                color="error"
-                                            >
-                                                <DeleteIcon />
-                                            </IconButton>
+                                            <IconButton onClick={() => handleOpenUserModal(u)} size="small"><EditIcon /></IconButton>
+                                            <IconButton onClick={() => handleDeleteUser(u.id)} size="small" color="error"><DeleteIcon /></IconButton>
                                         </TableCell>
                                     </TableRow>
                                 ))
@@ -824,22 +822,55 @@ export default function Settings({ onConnect, isDbConnected }) {
                         onChange={handleUserFormChange}
                         required
                         sx={{ mb: 2 }}
-                        autoComplete="username"
                     />
+                    {/* ***** 5. UPDATE PASSWORD TEXTFIELD WITH VISIBILITY TOGGLE ***** */}
                     <TextField 
                         margin="dense" 
                         name="password" 
                         label="Password" 
-                        type="password" 
+                        type={showPassword ? 'text' : 'password'}
                         fullWidth 
                         value={userFormData.password} 
                         onChange={handleUserFormChange} 
                         helperText={editingUser ? "Leave blank to keep current password" : "Required for new users"}
                         required={!editingUser}
                         sx={{ mb: 2 }}
-                        autoComplete="new-password"
+                        InputProps={{
+                            endAdornment: (
+                                <InputAdornment position="end">
+                                    <IconButton
+                                        aria-label="toggle password visibility"
+                                        onClick={() => setShowPassword(!showPassword)}
+                                        onMouseDown={(e) => e.preventDefault()}
+                                        edge="end"
+                                    >
+                                        {showPassword ? <VisibilityOff /> : <Visibility />}
+                                    </IconButton>
+                                </InputAdornment>
+                            )
+                        }}
                     />
-                    <FormControl fullWidth sx={{ mt: 2 }}>
+                    <TextField
+                        margin="dense"
+                        name="allowed_ip"
+                        label="Allowed IP Address (Optional)"
+                        fullWidth
+                        value={userFormData.allowed_ip || ''}
+                        onChange={handleUserFormChange}
+                        helperText="Restricts this user to a specific IP address."
+                        sx={{ mb: 2 }}
+                    />
+                    <TextField
+                        margin="dense"
+                        name="allowed_mac"
+                        label="Allowed MAC Address (Optional)"
+                        fullWidth
+                        value={userFormData.allowed_mac || ''}
+                        onChange={handleUserFormChange}
+                        helperText="Restricts this user to a specific physical device."
+                        sx={{ mb: 2 }}
+                    />
+                    <FormControl fullWidth>
                         <InputLabel>Role</InputLabel>
                         <Select 
                             name="role" 
@@ -851,12 +882,6 @@ export default function Settings({ onConnect, isDbConnected }) {
                             <MenuItem value="admin">Administrator</MenuItem>
                         </Select>
                     </FormControl>
-                    <Typography variant="caption" color="text.secondary" sx={{ mt: 1, display: 'block' }}>
-                        {userFormData.role === 'admin' ? 
-                            'Administrators can access all system features and manage settings.' :
-                            'Kiosk users can only access participant check-in functions.'
-                        }
-                    </Typography>
                 </DialogContent>
                 <DialogActions>
                     <Button onClick={handleCloseUserModal}>Cancel</Button>

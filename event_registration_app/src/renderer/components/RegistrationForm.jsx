@@ -32,6 +32,9 @@ export default function RegistrationForm({ mode = 'create', initialData = {}, on
   const [bulkResult, setBulkResult] = useState(null);
   const fileInputRef = useRef(null);
 
+  // ***** NEW STATE to track the original role in edit mode *****
+  const [originalRole, setOriginalRole] = useState('');
+
   // Fetch roles dynamically
   useEffect(() => {
     async function fetchRoles() {
@@ -41,7 +44,10 @@ export default function RegistrationForm({ mode = 'create', initialData = {}, on
         if (result.success && result.roles?.length) {
           setRoles(result.roles);
           const defaultRole = result.roles.find(r => r.isDefault);
-          if (defaultRole) setFormData(prev => ({ ...prev, role: defaultRole.name }));
+          // ***** FIX 1: Only set the default role in 'create' mode *****
+          if (mode === 'create' && defaultRole) {
+            setFormData(prev => ({ ...prev, role: defaultRole.name }));
+          }
         } else setRoles([]);
       } catch (err) {
         console.error('Error fetching roles:', err);
@@ -49,7 +55,7 @@ export default function RegistrationForm({ mode = 'create', initialData = {}, on
       }
     }
     fetchRoles();
-  }, [user]);
+  }, [user, mode]); // Add mode to dependency array
 
   // Edit mode form population
   useEffect(() => {
@@ -65,33 +71,44 @@ export default function RegistrationForm({ mode = 'create', initialData = {}, on
         country: initialData.country || 'India',
         regno: initialData.regno || ''
       });
+      // ***** NEW: Store the original role for comparison *****
+      setOriginalRole(initialData.role || '');
     }
   }, [mode, initialData]);
 
   // Registration number preview
   useEffect(() => {
-    if (mode === 'edit' || !formData.role || !user?.assignedEventId || roles.length === 0) {
-      setRegNoPreview('');
-      return;
-    }
-    let isMounted = true;
-    async function fetchRegNoPreview() {
+    // Shared function to fetch the preview
+    const fetchRegNoPreview = async () => {
       try {
         setRegNoPreview('Loading...');
         const roleObj = roles.find(r => r.name === formData.role);
         if (!roleObj) {
-          if (isMounted) setRegNoPreview('Invalid role selected');
+          setRegNoPreview('Invalid role selected');
           return;
         }
         const result = await window.electronAPI.getNextRegNo(user.assignedEventId, roleObj.code);
-        if (isMounted) setRegNoPreview(result.success ? result.regno : 'Error');
+        setRegNoPreview(result.success ? result.regno : 'Error');
       } catch (err) {
-        if (isMounted) setRegNoPreview('Error');
+        setRegNoPreview('Error');
+      }
+    };
+
+    if (mode === 'create') {
+      if (!formData.role || !user?.assignedEventId || roles.length === 0) {
+        setRegNoPreview('');
+        return;
+      }
+      fetchRegNoPreview();
+    } else { // In 'edit' mode
+      // ***** FEATURE: Show preview only if the role has changed *****
+      if (formData.role && formData.role !== originalRole) {
+        fetchRegNoPreview();
+      } else {
+        setRegNoPreview(''); // Clear preview if role is the same as original
       }
     }
-    fetchRegNoPreview();
-    return () => { isMounted = false; }
-  }, [formData.role, mode, user, roles]);
+  }, [formData.role, mode, user, roles, originalRole]);
 
   const handleChange = (e) => {
     setFormData(prev => ({ ...prev, [e.target.name]: e.target.value }));
@@ -110,13 +127,22 @@ export default function RegistrationForm({ mode = 'create', initialData = {}, on
         source: 'offline',
         registered_at: isEdit ? initialData.registered_at : new Date().toISOString()
       };
-      if (!isEdit) payload.regno = regNoPreview;
+      
+      // The backend now handles regno generation automatically.
+      // We only need to provide the preview for 'create' mode payload.
+      if (!isEdit) {
+        payload.regno = regNoPreview;
+      }
+
       const result = isEdit
         ? await window.electronAPI.updateParticipant(initialData.id, payload)
         : await window.electronAPI.addParticipant(payload);
+        
       if (!result.success) throw new Error(result.message || 'An unknown error occurred');
+      
       const finalParticipant = result.participant;
-      setSuccessMsg(isEdit ? 'Participant updated successfully!' : `Registered! Reg No: ${finalParticipant.regno}`);
+      setSuccessMsg(isEdit ? `Participant updated! New Reg No: ${finalParticipant.regno}` : `Registered! Reg No: ${finalParticipant.regno}`);
+      
       if (!isEdit) {
         setFormData({ role: '', name: '', designation: '', phone: '', email: '', company: '', paidStatus: 'Unpaid', country: 'India', regno: '' });
       }
@@ -178,6 +204,8 @@ export default function RegistrationForm({ mode = 'create', initialData = {}, on
           <MenuItem value=""><em>Select a Role...</em></MenuItem>
           {roles.map(r => <MenuItem key={r.code} value={r.name}>{r.name}</MenuItem>)}
         </TextField>
+
+        {/* --- Create Mode Registration Number --- */}
         {mode === 'create' && (
           <TextField label="Registration Number (Preview)" value={regNoPreview || 'Select a role to generate'}
             InputProps={{ readOnly: true }}
@@ -185,7 +213,19 @@ export default function RegistrationForm({ mode = 'create', initialData = {}, on
             helperText={regNoPreview === 'Error' ? 'Could not fetch preview.' : ''}
           />
         )}
-        {mode === 'edit' && <TextField label="Registration Number" value={formData.regno} InputProps={{ readOnly: true }} />}
+        
+        {/* --- Edit Mode Registration Number --- */}
+        {mode === 'edit' && <TextField label="Current Registration Number" value={formData.regno} InputProps={{ readOnly: true }} />}
+        {mode === 'edit' && regNoPreview && (
+            <TextField label="New Registration Number (Preview)" value={regNoPreview} 
+                InputProps={{ readOnly: true }}
+                error={regNoPreview === 'Error'}
+                helperText="This will be the new registration number upon saving."
+                color="warning"
+                focused
+            />
+        )}
+
         <TextField label="Name" name="name" value={formData.name} onChange={handleChange} required />
         <TextField label="Phone" name="phone" value={formData.phone} onChange={handleChange} />
         <TextField label="Email" name="email" value={formData.email} onChange={handleChange} type="email" />
@@ -207,12 +247,13 @@ export default function RegistrationForm({ mode = 'create', initialData = {}, on
     </form>
   );
 
-  return (
+return (
     <Box sx={{ maxWidth: 1000, margin: 'auto', mt: 2 }}>
       <Paper>
         <Tabs value={tabIndex} onChange={(e, val) => setTabIndex(val)} centered>
-          <Tab label="Single Registration" />
-          <Tab label="Bulk Upload from Excel" />
+          <Tab label={mode === 'edit' ? 'Edit Participant' : 'Single Registration'} />
+          {/* Only show Bulk Upload tab in 'create' mode */}
+          {mode === 'create' && <Tab label="Bulk Upload from Excel" />}
         </Tabs>
 
         <TabPanel value={tabIndex} index={0}>
@@ -223,30 +264,33 @@ export default function RegistrationForm({ mode = 'create', initialData = {}, on
           </Box>
         </TabPanel>
 
-        <TabPanel value={tabIndex} index={1}>
-          <Box sx={{ p: 3 }}>
-            <Typography variant="h6" gutterBottom>Bulk Upload Participants</Typography>
-            {error && <Alert severity="error" sx={{ mb: 2 }}>{error}</Alert>}
-            {bulkResult && (
-              <Alert
-                severity={bulkResult.errors > 0 ? "warning" : "success"}
-                sx={{ mb: 2, whiteSpace: 'pre-wrap' }}
-              >
-                {`Upload Complete: ${bulkResult.inserted} inserted, ${bulkResult.skipped} skipped (duplicates), ${bulkResult.errors} failed.`}
-              </Alert>
-            )}
-            <input ref={fileInputRef} type="file" onChange={handleBulkFileChange} accept=".xlsx,.xls,.csv" style={{ display: 'block', marginBottom: 16 }} />
-            <Button variant="contained" onClick={handleBulkUpload} disabled={bulkLoading || !bulkFile}>
-              {bulkLoading ? <CircularProgress size={24} /> : 'Upload and Process File'}
-            </Button>
-            <Box sx={{ mt: 3, p: 2, border: '1px dashed grey', borderRadius: 1 }}>
-              <Typography variant="body2" color="textSecondary">
-                Excel must have header row: <code>name, role, email, phone, company, designation, country, paidStatus</code><br/>
-                Roles must match allowed roles for the event.
-              </Typography>
+        {/* Only show Bulk Upload panel in 'create' mode */}
+        {mode === 'create' && (
+          <TabPanel value={tabIndex} index={1}>
+            <Box sx={{ p: 3 }}>
+              <Typography variant="h6" gutterBottom>Bulk Upload Participants</Typography>
+              {error && <Alert severity="error" sx={{ mb: 2 }}>{error}</Alert>}
+              {bulkResult && (
+                <Alert
+                  severity={bulkResult.errors > 0 ? "warning" : "success"}
+                  sx={{ mb: 2, whiteSpace: 'pre-wrap' }}
+                >
+                  {`Upload Complete: ${bulkResult.inserted} inserted, ${bulkResult.skipped} skipped (duplicates), ${bulkResult.errors} failed.`}
+                </Alert>
+              )}
+              <input ref={fileInputRef} type="file" onChange={handleBulkFileChange} accept=".xlsx,.xls,.csv" style={{ display: 'block', marginBottom: 16 }} />
+              <Button variant="contained" onClick={handleBulkUpload} disabled={bulkLoading || !bulkFile}>
+                {bulkLoading ? <CircularProgress size={24} /> : 'Upload and Process File'}
+              </Button>
+              <Box sx={{ mt: 3, p: 2, border: '1px dashed grey', borderRadius: 1 }}>
+                <Typography variant="body2" color="textSecondary">
+                  Excel must have header row: <code>name, role, email, phone, company, designation, country, paidStatus</code><br/>
+                  Roles must match allowed roles for the event.
+                </Typography>
+              </Box>
             </Box>
-          </Box>
-        </TabPanel>
+          </TabPanel>
+        )}
       </Paper>
     </Box>
   );

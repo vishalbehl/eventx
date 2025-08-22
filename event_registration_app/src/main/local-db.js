@@ -44,16 +44,18 @@ function createLocalDatabase({ folderPath, dbName }) {
 // ******** THIS IS THE UPDATED AND COMPLETED SCHEMA ********
 async function createTables() {
   const schema = `
-  CREATE TABLE IF NOT EXISTS users (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    username TEXT UNIQUE,
-    password_hash TEXT,
-    role TEXT,
-    assigned_event_id INTEGER,
-    created_at TEXT,
-    updated_at TEXT,
-    needs_sync INTEGER DEFAULT 0 -- Using INTEGER for boolean (0=false, 1=true)
-  );
+CREATE TABLE IF NOT EXISTS users (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  username TEXT UNIQUE,
+  password_hash TEXT,
+  role TEXT,
+  assigned_event_id INTEGER,
+  created_at TEXT,
+  updated_at TEXT,
+  allowed_ip TEXT,      -- ADD THIS LINE
+  allowed_mac TEXT,     -- ADD THIS LINE
+  needs_sync INTEGER DEFAULT 0
+);
 
   CREATE TABLE IF NOT EXISTS events (
     id INTEGER PRIMARY KEY, -- Not autoincrement, ID comes from central server
@@ -191,7 +193,7 @@ async function authenticateLocalUser(username, password) {
 }
 
 async function getLocalUsers() {
-  return await allQuery('SELECT id, username, role, assigned_event_id, assigned_kiosk_name FROM users');
+  return await allQuery('SELECT id, username, role, assigned_event_id, assigned_kiosk_name, allowed_ip, allowed_mac FROM users');
 }
 
 async function addLocalUser(user) {
@@ -241,19 +243,31 @@ async function getLatestEventId() {
 
 async function getNextRegNo(eventId, roleCode) {
     const prefix = `${roleCode}-`;
-    const result = await getQuery(
-        `SELECT regno FROM participants
-         WHERE event_id = ? AND regno LIKE ?
-         ORDER BY id DESC LIMIT 1`,
-        [eventId, `${prefix}%`]
+    
+    // 1. Get all registration numbers for this role, ordered numerically
+    const allRegNos = await allQuery(
+      `SELECT regno FROM participants
+       WHERE event_id = ? AND regno LIKE ?
+       ORDER BY CAST(SUBSTR(regno, LENGTH(?) + 2) AS INTEGER) ASC`,
+      [eventId, `${prefix}%`, prefix]
     );
+
+    // 2. Extract just the numeric part of each regno
+    const existingNums = allRegNos.map(p => parseInt(p.regno.split('-')[1], 10));
+
+    // 3. Find the first gap in the sequence
     let nextNum = 1;
-    if (result && result.regno) {
-        const lastNum = parseInt(result.regno.split('-')[1], 10);
-        if (!isNaN(lastNum)) {
-            nextNum = lastNum + 1;
-        }
+    for (const num of existingNums) {
+      // If the current number from the DB is greater than our counter,
+      // it means we've found the first available number.
+      if (num > nextNum) {
+        break;
+      }
+      // Otherwise, increment our counter and check the next number.
+      nextNum++;
     }
+
+    // 4. Format the final registration number string and return it
     return `${prefix}${String(nextNum).padStart(4, '0')}`;
 }
 
@@ -323,7 +337,6 @@ async function getLocalParticipants(eventId, filters = {}) {
     }
 }
 
-
 async function addLocalParticipant(data) {
   const { event_id, regno, name, email, phone, role, company, designation, country, paidStatus, source, registered_at } = data;
   const result = await runQuery(
@@ -332,6 +345,42 @@ async function addLocalParticipant(data) {
     [event_id, regno, name, email, phone, role, company, designation, country, paidStatus, source, registered_at]
   );
   return { id: result.lastID, ...data };
+}
+
+async function updateLocalParticipant(id, data) {
+  // 1. Get the participant's current state from the database
+  const currentUser = await getQuery('SELECT role, regno FROM participants WHERE id = ?', [id]);
+
+  if (!currentUser) {
+    throw new Error(`Participant with ID ${id} not found.`);
+  }
+
+  // 2. Start with the existing registration number as the default
+  let finalRegno = currentUser.regno;
+
+  // 3. If the role has changed, generate a new registration number
+  if (currentUser.role !== data.role) {
+    const eventRoles = await getEventRoles(data.event_id);
+    const roleObj = eventRoles.find(r => r.name === data.role);
+    if (roleObj) {
+      // Overwrite the default with the new number
+      finalRegno = await getNextRegNo(data.event_id, roleObj.code);
+    }
+    // If a valid new role isn't found, we safely keep the old regno
+  }
+
+  // 4. Perform the update using the finalRegno
+  const { name, email, phone, role, company, designation, country, paidStatus } = data;
+  await runQuery(
+    `UPDATE participants 
+     SET name=?, email=?, phone=?, role=?, company=?, designation=?, country=?, paid_status=?, regno=?
+     WHERE id = ?`,
+    // Use the correctly determined 'finalRegno' here
+    [name, email, phone, role, company, designation, country, paidStatus, finalRegno, id]
+  );
+  
+  // 5. Return the fully updated participant record
+  return await getQuery('SELECT * FROM participants WHERE id = ?', [id]);
 }
 
 async function addBulkParticipants(eventId, participants) {
@@ -386,7 +435,6 @@ async function addBulkParticipants(eventId, participants) {
     }
     return results;
 }
-
 
 // --- SEEDING ---
 async function clearAndSeedDataFromServer(data) {
@@ -586,7 +634,25 @@ async function getCheckInsBySession(sessionId) {
         return []; // Return empty array on error
     }
 }
-
+async function getAllCheckInsForEvent(eventId) {
+  if (!eventId) return [];
+  const query = `
+    SELECT
+      c.check_in_time,
+      p.regno,
+      p.name AS participant_name,
+      p.role AS participant_role,
+      s.id AS session_id,
+      s.name AS session_name,
+      s.session_date  -- <-- ADD THIS LINE
+    FROM check_ins c
+    JOIN participants p ON c.participant_id = p.id
+    JOIN sessions s ON c.session_id = s.id
+    WHERE c.event_id = ?
+    ORDER BY s.session_date, s.id, p.role, p.regno ASC -- <-- ADD s.session_date
+  `;
+  return await allQuery(query, [eventId]);
+}
 
 module.exports = {
   createLocalDatabase,
@@ -605,10 +671,12 @@ module.exports = {
   getNextRegNo,
   getLocalParticipants,
   addLocalParticipant,
+  updateLocalParticipant,
   addBulkParticipants,
   getEventRoles,
   getEventById,
   getTemplateById,
   addCheckIn,
-  getCheckInsBySession
+  getCheckInsBySession,
+  getAllCheckInsForEvent
 };

@@ -89,7 +89,7 @@ export default function UserDashboard({ user }) {
 
   return (
     <Box sx={{ p: 3 }}>
-      <Typography variant="h3" gutterBottom>Event Dashboard</Typography>
+      {/* <Typography variant="h4" gutterBottom>Dashboard</Typography> */}
         <Grid container spacing={2} sx={{ mb: 4 }}>
         <Grid item xs={6} md>
             <Paper sx={{ p: 2, textAlign: 'center' }}>

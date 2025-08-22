@@ -9,6 +9,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   selectLocalDbFolder: () => ipcRenderer.invoke('select-local-db-folder'),
   createLocalDb: (settings) => ipcRenderer.invoke('create-local-db', settings),
   createServerDb: (dbConfig) => ipcRenderer.invoke('create-server-db', dbConfig),
+  getNetworkInfo: () => ipcRenderer.invoke('get-network-info'),
 
   // --- Startup & Authentication ---
   isDatabaseSeeded: () => ipcRenderer.invoke('is-database-seeded'),
@@ -37,6 +38,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   addParticipant: (data) => ipcRenderer.invoke('add-participant', data),
   updateParticipant: (id, fields) => ipcRenderer.invoke('update-participant', { id, fields }),
   deleteParticipant: (id) => ipcRenderer.invoke('delete-participant', id),
+  updateParticipantAndRegno: (data) => ipcRenderer.invoke('update-participant-and-regno', data),
   addBulkParticipants: (eventId, participants) => ipcRenderer.invoke('add-bulk-participants', eventId, participants),
   getEventRoles: (eventId) => ipcRenderer.invoke('get-event-roles', eventId),
 
@@ -48,5 +50,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   generateQRToken: (participant) => ipcRenderer.invoke('generate-qr-token', participant),
   verifyQRToken: (token) => ipcRenderer.invoke('verify-qr-token', token),
   processCheckIn: (payload) => ipcRenderer.invoke('process-check-in', payload),
+  getCheckIns: (sessionId) => ipcRenderer.invoke('get-check-ins', sessionId),
+  getReportData: (eventId) => ipcRenderer.invoke('get-report-data', eventId),
+  getAllCheckInsForEvent: (eventId) => ipcRenderer.invoke('get-all-checkins-for-event', eventId),
 
 });

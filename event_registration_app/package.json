@@ -39,6 +39,7 @@
     "html5-qrcode": "^2.3.8",
     "jsonwebtoken": "^9.0.2",
     "jspdf": "^3.0.1",
+    "jspdf-autotable": "^5.0.2",
     "jwt-decode": "^4.0.0",
     "mysql2": "^3.14.3",
     "node-fetch": "^2.7.0",

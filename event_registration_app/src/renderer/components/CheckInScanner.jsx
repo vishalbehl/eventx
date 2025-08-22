@@ -33,7 +33,7 @@ export default function CheckInScanner({ user }) {
       setCheckedInList([]);
       console.error("Failed to fetch check-in list:", err);
     }
-  }, []); // This function doesn't depend on component state, so empty array is correct.
+  }, []);
 
   const onScanSuccess = useCallback(async (decodedText) => {
     if (html5QrcodeScannerRef.current && html5QrcodeScannerRef.current.isScanning) {
@@ -63,6 +63,7 @@ export default function CheckInScanner({ user }) {
         } else {
           setSuccess(`Welcome, ${participant.name}! (${participant.regno})`);
         }
+        // This is the key line that updates the table below
         fetchCheckedInList(selectedSessionId);
       } else {
         throw new Error(result.message || 'Check-in failed');
@@ -73,9 +74,6 @@ export default function CheckInScanner({ user }) {
       setLoading(false);
       setScannerState('result');
     }
-    // ******** THE FIX IS HERE ********
-    // The problematic 'loading' dependency has been removed.
-    // 'fetchCheckedInList' has been added to ensure the callback always has the latest version.
   }, [selectedSessionId, user, fetchCheckedInList]);
 
   const fetchSessions = useCallback(async () => {
@@ -146,7 +144,7 @@ export default function CheckInScanner({ user }) {
           <Grid item xs={12} sm={8}>
             <FormControl fullWidth>
               <InputLabel>Select Session</InputLabel>
-              <Select value={selectedSessionId} onChange={(e) => setSelectedSessionId(e.target.value)} disabled={scannerState === 'scanning' || sessions.length === 0}>
+              <Select value={selectedSessionId} onChange={(e) => setSelectedSessionId(e.target.value)} disabled={scannerState === 'scanning' || sessions.length === 0} >
                 {sessions.map((session) => (
                   <MenuItem key={session.id} value={session.id}>{session.name}</MenuItem>
                 ))}

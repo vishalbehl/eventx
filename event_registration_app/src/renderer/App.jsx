@@ -15,6 +15,7 @@ import QrCodeScannerIcon from '@mui/icons-material/QrCodeScanner';
 import PeopleIcon from '@mui/icons-material/People';
 import SettingsIcon from '@mui/icons-material/Settings';
 import CardMembershipIcon from '@mui/icons-material/CardMembership'; // Icon for Certificate
+import AssessmentIcon from '@mui/icons-material/Assessment'; // Icon for Report
 
 // Eagerly load components used in the setup flow
 import SignIn from './components/Signin';
@@ -29,6 +30,7 @@ const RegistrationForm = React.lazy(() => import('./components/RegistrationForm'
 const AllParticipants = React.lazy(() => import('./components/AllParticipants'));
 const CheckInScanner = React.lazy(() => import('./components/CheckInScanner'));
 const CertificateGenerator = React.lazy(() => import('./components/CertificateGenerator'));
+const ReportGenerator = React.lazy(() => import('./components/ReportGenerator'));
 
 const drawerWidth = 240;
 const theme = createTheme();
@@ -37,8 +39,9 @@ const theme = createTheme();
 const adminMenu = [
   { text: 'Dashboard', icon: <DashboardIcon />, path: '/dashboard' },
   { text: 'All Participants', icon: <PeopleIcon />, path: '/participants' },
-  { text: 'Certificate Generator', icon: <CardMembershipIcon />, path: '/certificate' },
+  { text: 'Generate Report', icon: <AssessmentIcon />, path: '/report' },
   { text: 'Settings', icon: <SettingsIcon />, path: '/settings', adminOnly: true },
+
 ];
 
 const kioskMenu = [
@@ -46,7 +49,7 @@ const kioskMenu = [
   { text: 'Register Participant', icon: <PersonAddIcon />, path: '/register' },
   { text: 'All Participants', icon: <PeopleIcon />, path: '/participants' },
   { text: 'Check-In Scanner', icon: <QrCodeScannerIcon />, path: '/checkin' },
-  { text: 'Certificate Generator', icon: <CardMembershipIcon />, path: '/certificate' },
+  { text: 'Certificate Print', icon: <CardMembershipIcon />, path: '/certificate' },
 ];
 
 
@@ -186,19 +189,21 @@ function App() {
                   <Route path="/" element={<Navigate to="/dashboard" />} />
                   <Route path="/dashboard" element={<UserDashboard user={user} />} />
                   <Route path="/participants" element={<AllParticipants user={user} />} />
-                  <Route path="/certificate" element={<CertificateGenerator user={user} />} />
+                  <Route path="/report" element={<ReportGenerator user={user} />} />
 
                   {/* Kiosk-only routes */}
                   {user.role === 'kiosk' && (
                     <>
                       <Route path="/register" element={<RegistrationForm user={user} />} />
                       <Route path="/checkin" element={<CheckInScanner user={user} />} />
+                      <Route path="/certificate" element={<CertificateGenerator user={user} />} />
                     </>
                   )}
 
                   {/* Admin-only routes */}
                   {user.role === 'admin' && (
                     <Route path="/settings" element={<Settings dbSettings={dbSettings} onResetApp={handleResetApp} />} />
+                    
                   )}
                   
                   {/* Fallback for any other path */}

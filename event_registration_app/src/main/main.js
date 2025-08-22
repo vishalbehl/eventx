@@ -30,31 +30,77 @@ async function initializeDatabaseConnection() {
     return;
   }
 
-  console.log(`Found saved config for mode: '${config.mode}'. Attempting to connect...`);
+  console.log(`Found saved config for mode: '${config.mode}'. Attempting to connect and validate...`);
   try {
     if (config.mode === 'local') {
-      // The bug was here. We now correctly pass the saved folderPath and dbName.
       if (!config.folderPath || !config.dbName) {
-          throw new Error("Local DB config is incomplete. Missing folderPath or dbName.");
+        throw new Error("Local DB config is incomplete. Missing folderPath or dbName.");
       }
+      // Step 1: Connect (or create an empty DB if missing)
       await localDb.createLocalDatabase({
         folderPath: config.folderPath,
         dbName: config.dbName,
       });
+
+      // Step 2: Validate that the database has been seeded with data
+      const isSeeded = await localDb.isDatabaseSeeded();
+      if (!isSeeded) {
+        // This is our trigger. The DB file exists but is empty.
+        throw new Error("Local database file is present but unseeded. Resetting configuration.");
+      }
     } else {
       console.log('Server mode configured. Connections will be established on demand.');
+      // You could add a similar check here for server DBs if needed
     }
-    console.log('✅ Database connection re-established successfully on startup.');
+    console.log('✅ Database connection re-established and validated successfully on startup.');
   } catch (error) {
-    console.error('🔴 FAILED to connect to the database on startup:', error.message);
+    console.error('🔴 FAILED to connect or validate the database on startup:', error.message);
+    // Step 3: Self-heal by clearing the invalid configuration
+    store.delete('dbConfig');
+    store.delete('activeEventId'); // Also clear any related stale data
+    console.log('Cleared invalid database configuration. App will now start at setup screen.');
   }
 }
+
+function startHeartbeat() {
+    setInterval(async () => {
+        try {
+            const config = store.get('dbConfig');
+            // Only run heartbeats in server mode
+            if (config && config.mode === 'server') {
+                const hostname = os.hostname();
+                // A new function in server-db.js to update the heartbeat
+                await serverDb.updateKioskHeartbeat(config, hostname);
+            }
+        } catch (err) {
+            console.error('Heartbeat failed:', err.message);
+        }
+    }, 60000); // Run every 60 seconds
+}
+// This handler gets network interface details from the operating system.
+ipcMain.handle('get-network-info', () => {
+    const interfaces = os.networkInterfaces();
+    const results = [];
+
+    for (const name in interfaces) {
+        // Find the first valid, non-internal IPv4 address for each interface
+        const iface = interfaces[name].find(details => details.family === 'IPv4' && !details.internal);
+        if (iface) {
+            results.push({
+                name: name,
+                ip: iface.address,
+                mac: iface.mac.toUpperCase()
+            });
+        }
+    }
+    return results;
+});
 
 app.whenReady().then(() => {
   // Run the database connection logic BEFORE creating the window
   initializeDatabaseConnection().then(() => {
     createWindow();
-
+    startHeartbeat();
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) createWindow();
     });
@@ -155,12 +201,33 @@ ipcMain.handle('is-database-seeded', async () => {
 ipcMain.handle('login-user', async (event, { username, password }) => {
   try {
     const config = store.get('dbConfig');
-    if (!config) return { success: false, message: 'Database not configured.' };
+    if (!config) {
+      return { success: false, message: 'Database not configured.' };
+    }
 
-    let user;
-    const authResult = config.mode === 'server'
-        ? await serverDb.authenticateServerUser(config, username, password)
-        : { success: !!(user = await localDb.authenticateLocalUser(username, password)), user };
+    let authResult;
+
+    if (config.mode === 'server') {
+      // ***** FIX: Find ALL valid MAC addresses, not just the first one *****
+      const interfaces = os.networkInterfaces();
+      const clientMacAddresses = []; // Changed to an array
+      for (const key in interfaces) {
+          const iface = interfaces[key].find(details => !details.internal && details.mac && details.mac !== '00:00:00:00:00:00');
+          if (iface) {
+              clientMacAddresses.push(iface.mac.toUpperCase()); // Add each valid MAC to the array
+          }
+      }
+      
+      // Pass the entire array of MAC addresses to the authentication function
+      authResult = await serverDb.authenticateServerUser(config, username, password, clientMacAddresses);
+
+    // --- LOCAL MODE LOGIC ---
+    } else {
+      const user = await localDb.authenticateLocalUser(username, password);
+      authResult = { success: !!user, user };
+    }
+
+    // --- COMMON LOGIC (POST-AUTHENTICATION) ---
 
     if (!authResult.success) {
       return { success: false, message: authResult.message || 'Invalid credentials' };
@@ -169,13 +236,14 @@ ipcMain.handle('login-user', async (event, { username, password }) => {
     const authenticatedUser = authResult.user;
     const hostname = os.hostname();
 
+    // Record the login for auditing purposes
     if (config.mode === 'server') {
       await serverDb.recordUserLogin(config, authenticatedUser.id, hostname);
     } else {
       await localDb.recordUserLogin(authenticatedUser.id, hostname);
     }
 
-    // This is the single source of truth for the currently active event on this machine.
+    // Get the currently active event for this kiosk from storage
     const activeEventId = store.get('activeEventId', null);
 
     if (activeEventId) {
@@ -187,18 +255,17 @@ ipcMain.handle('login-user', async (event, { username, password }) => {
       }
     }
 
-    // ******** THE FIX IS HERE ********
-    // Create the token payload using the reliable 'activeEventId' from the store,
-    // NOT the potentially stale 'assigned_event_id' from the user's database record.
+    // Create the JWT token payload
     const userPayload = {
       id: authenticatedUser.id,
       username: authenticatedUser.username,
       role: authenticatedUser.role,
-      assignedEventId: activeEventId, // Directly use the confirmed active event ID
+      assignedEventId: activeEventId, // Use the reliable active event ID from the store
     };
     const token = jwt.sign(userPayload, JWT_SECRET, { expiresIn: '8h' });
 
     return { success: true, token };
+
   } catch (err) {
     console.error("Login Error in main.js:", err);
     return { success: false, message: `Login failed: ${err.message}` };
@@ -270,27 +337,56 @@ ipcMain.handle('get-users', async () => {
 });
 
 ipcMain.handle('add-user', async (_, userData) => {
-  const config = store.get('dbConfig');
-  if (!config) return { success: false, message: 'DB not configured' };
-  return config.mode === 'server'
-    ? await serverDb.addUser(config, userData)
-    : await localDb.addLocalUser(userData);
+  try {
+    const config = store.get('dbConfig');
+    if (!config) throw new Error('Database not configured.');
+
+    const newUser = config.mode === 'server'
+      ? await serverDb.addUser(config, userData)
+      : await localDb.addLocalUser(userData);
+    
+    return { success: true, user: newUser };
+
+  } catch (error) {
+    console.error('Failed to add user:', error);
+    return { success: false, message: error.message };
+  }
 });
 
 ipcMain.handle('update-user', async (_, { id, fields }) => {
-    const config = store.get('dbConfig');
-    if (!config) return { success: false, message: 'DB not configured' };
-    return config.mode === 'server'
-        ? await serverDb.updateUser(config, id, fields)
-        : await localDb.updateLocalUser(id, fields);
+    try {
+        const config = store.get('dbConfig');
+        if (!config) throw new Error('Database not configured.');
+
+        const result = config.mode === 'server'
+            ? await serverDb.updateUser(config, id, fields)
+            : await localDb.updateLocalUser(id, fields);
+
+        // Ensure a standard success object is returned
+        return { success: true, changes: result };
+
+    } catch (error) {
+        console.error('Failed to update user:', error);
+        return { success: false, message: error.message };
+    }
 });
 
 ipcMain.handle('delete-user', async (_, id) => {
-    const config = store.get('dbConfig');
-    if (!config) return { success: false, message: 'DB not configured' };
-    return config.mode === 'server'
-        ? await serverDb.deleteUser(config, id)
-        : await localDb.deleteLocalUser(id);
+    try {
+        const config = store.get('dbConfig');
+        if (!config) throw new Error('Database not configured.');
+        
+        const result = config.mode === 'server'
+            ? await serverDb.deleteUser(config, id)
+            : await localDb.deleteLocalUser(id);
+
+        // Ensure a standard success object is returned
+        return { success: true, changes: result.changes || result };
+
+    } catch (error) {
+        console.error('Failed to delete user:', error);
+        return { success: false, message: error.message };
+    }
 });
 
 // --- Data Synchronization ---
@@ -478,7 +574,6 @@ ipcMain.handle('get-event-roles', async (_, eventId) => {
     }
 });
 
-
 // ******** ADDED HANDLERS FOR CHECK-IN SCANNER ********
 
 ipcMain.handle('get-sessions', async (_, eventId) => {
@@ -541,4 +636,52 @@ ipcMain.handle('process-check-in', async (_, { qrData, sessionId, eventId }) => 
     } catch (err) {
         return { success: false, message: err.message };
     }
+});
+
+// ***** REPORT HANDLER *****
+ipcMain.handle('get-report-data', async (_, eventId) => {
+  try {
+    const config = store.get('dbConfig');
+    if (!config) throw new Error('Database not configured.');
+
+    const fetchData = async (dbModule, ...args) => {
+      const event = await dbModule.getEventById(...args);
+      const stats = await dbModule.getDashboardStats(...args);
+      // Pass an empty filter object to get ALL participants
+      const participantsResult = await dbModule.getParticipants(...args, {}); 
+      
+      return {
+        event,
+        stats,
+        participants: participantsResult.participants || [],
+      };
+    };
+
+    const data = config.mode === 'server'
+      ? await fetchData(serverDb, config, eventId)
+      : await fetchData(localDb, eventId);
+      
+    return { success: true, data };
+
+  } catch (err) {
+    console.error("Error fetching report data:", err);
+    return { success: false, message: err.message };
+  }
+});
+
+ipcMain.handle('get-all-checkins-for-event', async (_, eventId) => {
+  try {
+    const config = store.get('dbConfig');
+    if (!config) throw new Error('Database not configured.');
+
+    const checkIns = config.mode === 'server'
+      ? await serverDb.getAllCheckInsForEvent(config, eventId)
+      : await localDb.getAllCheckInsForEvent(eventId);
+      
+    return { success: true, checkIns };
+
+  } catch (err) {
+    console.error("Error fetching all check-ins for event:", err);
+    return { success: false, message: err.message };
+  }
 });

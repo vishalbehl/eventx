@@ -223,9 +223,6 @@ export default function AllParticipants({ user }) {
                     <PrintableItem template={template} participant={participant} qrToken={qrToken} />
                 );
                 printContainer.innerHTML = badgeHtml;
-
-                // ******** THIS IS THE FIX ********
-                // Reduced scale from 4 to 2
                 const canvas = await html2canvas(printContainer.children[0], { scale: 2, useCORS: true, backgroundColor: null });
                 
                 // Use JPEG for better compression and smaller file size
@@ -270,7 +267,7 @@ export default function AllParticipants({ user }) {
                             </TextField>
                         </Grid>
                         <Grid item xs={12} sm={2}>
-                            <Button type="submit" variant="contained" fullWidth disabled={loading} sx={{minWidth:150}}>Search</Button>
+                            <Button type="submit" variant="contained" fullWidth disabled={loading}>Search</Button>
                         </Grid>
                     </Grid>
                 </form>
