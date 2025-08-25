@@ -100,7 +100,7 @@ app.whenReady().then(() => {
   // Run the database connection logic BEFORE creating the window
   initializeDatabaseConnection().then(() => {
     createWindow();
-    startHeartbeat();
+    // startHeartbeat();
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) createWindow();
     });
@@ -128,10 +128,9 @@ function createWindow() {
   mainWindow.loadURL(startUrl);
 }
 
-// =================================================================
-// IPC HANDLERS - (The rest of the file remains the same)
-// =================================================================
-
+// =================
+// IPC HANDLERS
+// =================
 // --- App Configuration & Setup ---
 ipcMain.handle('get-config', () => store.get('dbConfig'));
 ipcMain.handle('save-config', (_, configData) => {
@@ -270,6 +269,55 @@ ipcMain.handle('login-user', async (event, { username, password }) => {
     console.error("Login Error in main.js:", err);
     return { success: false, message: `Login failed: ${err.message}` };
   }
+});
+
+ipcMain.handle('upload-local-data', async (_, authToken) => {
+    try {
+        const config = store.get('dbConfig');
+        if (config.mode !== 'local') {
+            return { success: false, message: 'Upload feature is only for local mode.' };
+        }
+        const centralUrl = store.get('centralServerUrl');
+        if (!centralUrl) {
+            return { success: false, message: 'Central server URL not configured.' };
+        }
+
+        // 1. Get all unsynced data
+        const participants = await localDb.getUnsyncedParticipants();
+        const checkIns = await localDb.getUnsyncedCheckIns();
+
+        if (participants.length === 0 && checkIns.length === 0) {
+            return { success: true, message: 'All data is already in sync.' };
+        }
+
+        // 2. Send data to the central server
+        const response = await fetch(`${centralUrl}/api/sync/upload`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${authToken}`
+            },
+            body: JSON.stringify({ participants, checkIns })
+        });
+
+        const result = await response.json();
+        if (!response.ok || !result.success) {
+            throw new Error(result.message || 'Failed to upload data to the central server.');
+        }
+
+        // 3. Mark the uploaded data as synced in the local DB
+        const syncedIds = {
+            participants: participants.map(p => p.id),
+            checkIns: checkIns.map(c => c.id)
+        };
+        await localDb.markDataAsSynced(syncedIds);
+
+        return { success: true, message: result.message || 'Sync successful!' };
+
+    } catch (err) {
+        console.error('Upload failed:', err);
+        return { success: false, message: `Upload failed: ${err.message}` };
+    }
 });
 
 // --- Central Server Communication ---

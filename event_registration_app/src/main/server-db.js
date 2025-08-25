@@ -471,7 +471,7 @@ async function getDashboardStats(config, eventId) {
     SELECT
       (SELECT COUNT(*) FROM participants WHERE event_id = $1) AS total_participants,
       (SELECT COUNT(DISTINCT participant_id) FROM check_ins WHERE event_id = $1) AS total_arrived,
-      (SELECT COUNT(*) FROM participants WHERE event_id = $1 AND source LIKE 'online%') AS total_online,
+      (SELECT COUNT(*) FROM participants WHERE event_id = $1 AND source ILIKE 'online%') AS total_online,
       (SELECT COUNT(*) FROM participants WHERE event_id = $1 AND source = 'offline') AS total_offline,
       (SELECT COUNT(*) FROM participants WHERE event_id = $1 AND paid_status = 'Paid') AS total_paid,
       (SELECT COUNT(*) FROM participants WHERE event_id = $1 AND paid_status = 'Unpaid') AS total_unpaid
@@ -505,7 +505,6 @@ async function getDashboardStats(config, eventId) {
     await client.end();
   }
 }
-
 
 // --- Get sessions for an event ---
 async function getSessions(config, eventId) {
@@ -705,7 +704,7 @@ async function addBulkParticipants(config, eventId, participants) {
                 designation: p.designation || null,
                 country: p.country || null,
                 paidStatus: p.paidStatus || 'Unpaid',
-                source: 'online-bulk',
+                source: 'Online',
                 registered_at: new Date().toISOString()
             };
             await addParticipant(config, payload);

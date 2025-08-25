@@ -289,7 +289,7 @@ async function getLocalDashboardStats(eventId) {
         (SELECT COUNT(DISTINCT participant_id) FROM check_ins WHERE event_id = ?) as total_arrived,
         SUM(CASE WHEN paid_status = 'Paid' THEN 1 ELSE 0 END) as total_paid,
         SUM(CASE WHEN paid_status = 'Unpaid' THEN 1 ELSE 0 END) as total_unpaid,
-        SUM(CASE WHEN source LIKE 'online%' THEN 1 ELSE 0 END) as total_online,
+        SUM(CASE WHEN LOWER(source) LIKE 'online%' THEN 1 ELSE 0 END) as total_online,
         SUM(CASE WHEN source = 'offline' THEN 1 ELSE 0 END) as total_offline
       FROM participants WHERE event_id = ?`;
 
@@ -340,8 +340,8 @@ async function getLocalParticipants(eventId, filters = {}) {
 async function addLocalParticipant(data) {
   const { event_id, regno, name, email, phone, role, company, designation, country, paidStatus, source, registered_at } = data;
   const result = await runQuery(
-    `INSERT INTO participants (event_id, regno, name, email, phone, role, company, designation, country, paid_status, source, registered_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO participants (event_id, regno, name, email, phone, role, company, designation, country, paid_status, source, registered_at, needs_sync)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
     [event_id, regno, name, email, phone, role, company, designation, country, paidStatus, source, registered_at]
   );
   return { id: result.lastID, ...data };
@@ -373,9 +373,8 @@ async function updateLocalParticipant(id, data) {
   const { name, email, phone, role, company, designation, country, paidStatus } = data;
   await runQuery(
     `UPDATE participants 
-     SET name=?, email=?, phone=?, role=?, company=?, designation=?, country=?, paid_status=?, regno=?
-     WHERE id = ?`,
-    // Use the correctly determined 'finalRegno' here
+     SET name=?, email=?, phone=?, role=?, company=?, designation=?, country=?, paid_status=?, regno=?, needs_sync = 1
+     WHERE id = ?`, // <-- Set needs_sync to 1
     [name, email, phone, role, company, designation, country, paidStatus, finalRegno, id]
   );
   
@@ -419,7 +418,7 @@ async function addBulkParticipants(eventId, participants) {
                 designation: p.designation || null,
                 country: p.country || null,
                 paidStatus: p.paidStatus || 'Unpaid',
-                source: 'online-bulk',
+                source: 'Online',
                 registered_at: new Date().toISOString()
             };
             await addLocalParticipant(payload);
@@ -605,7 +604,7 @@ async function addCheckIn(eventId, participantId, sessionId) {
 
         // 4. Otherwise, insert the new check-in record
         await runQuery(
-            'INSERT INTO check_ins (event_id, participant_id, session_id, check_in_time) VALUES (?, ?, ?, ?)',
+            'INSERT INTO check_ins (event_id, participant_id, session_id, check_in_time, needs_sync) VALUES (?, ?, ?, ?, 1)',
             [eventId, participantId, sessionId, new Date().toISOString()]
         );
 
@@ -615,6 +614,7 @@ async function addCheckIn(eventId, participantId, sessionId) {
         return { success: false, message: error.message };
     }
 }
+
 async function getCheckInsBySession(sessionId) {
     if (!sessionId) {
         return [];
@@ -634,6 +634,7 @@ async function getCheckInsBySession(sessionId) {
         return []; // Return empty array on error
     }
 }
+
 async function getAllCheckInsForEvent(eventId) {
   if (!eventId) return [];
   const query = `
@@ -653,6 +654,34 @@ async function getAllCheckInsForEvent(eventId) {
   `;
   return await allQuery(query, [eventId]);
 }
+
+async function getUnsyncedParticipants() {
+    return await allQuery('SELECT * FROM participants WHERE needs_sync = 1');
+}
+
+async function getUnsyncedCheckIns() {
+    // We need to join to get participant regno for the server
+    return await allQuery(`
+        SELECT c.*, p.regno 
+        FROM check_ins c 
+        JOIN participants p ON c.participant_id = p.id 
+        WHERE c.needs_sync = 1
+    `);
+}
+
+async function markDataAsSynced(syncedIds) {
+    if (syncedIds.participants.length > 0) {
+        const placeholders = syncedIds.participants.map(() => '?').join(',');
+        await runQuery(`UPDATE participants SET needs_sync = 0 WHERE id IN (${placeholders})`, syncedIds.participants);
+    }
+    if (syncedIds.checkIns.length > 0) {
+        const placeholders = syncedIds.checkIns.map(() => '?').join(',');
+        await runQuery(`UPDATE check_ins SET needs_sync = 0 WHERE id IN (${placeholders})`, syncedIds.checkIns);
+    }
+    return { success: true };
+}
+
+
 
 module.exports = {
   createLocalDatabase,
@@ -678,5 +707,9 @@ module.exports = {
   getTemplateById,
   addCheckIn,
   getCheckInsBySession,
-  getAllCheckInsForEvent
+  getAllCheckInsForEvent,
+  getUnsyncedParticipants,
+  getUnsyncedCheckIns,
+  markDataAsSynced,
+
 };

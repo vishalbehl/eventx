@@ -14,7 +14,8 @@ import {
   FormatAlignLeft, FormatAlignCenter, FormatAlignRight, TextFields as TextFieldsIcon, 
   QrCode2 as QrCode2Icon, Today as TodayIcon, NavigateBefore, NavigateNext, 
   ZoomIn, ZoomOut, AddPhotoAlternate, Description, ColorLens as ColorLensIcon,
-  ContactMail as ContactMailIcon, AlternateEmail as AlternateEmailIcon, Phone as PhoneIcon, Badge as BadgeIcon
+  ContactMail as ContactMailIcon, AlternateEmail as AlternateEmailIcon, Phone as PhoneIcon, Badge as BadgeIcon,
+  SaveAs as SaveAsIcon
 } from '@mui/icons-material';
 import { v4 as uuidv4 } from 'uuid';
 import jsPDF from 'jspdf';
@@ -139,7 +140,6 @@ const useHistoryReducer = (reducer, initialState) => {
   };
   return { state, dispatch: wrappedDispatch, loadState, undo, redo, canUndo: history.undo.length > 0, canRedo: history.redo.length > 0 };
 };
-
 
 // ===== Main Component =====
 export default function PrintDesigner({ user }) {
@@ -271,7 +271,6 @@ export default function PrintDesigner({ user }) {
     });
   };
 
-
   // Save template to backend
   const handleSaveTemplate = async () => {
     if (!template.template_name || template.template_name.trim() === '') {
@@ -311,6 +310,43 @@ export default function PrintDesigner({ user }) {
     }
   };
 
+  const handleSaveAsNew = async () => {
+    const newName = `${template.template_name}`;
+    if (!newName || newName.trim() === '') {
+      showSnackbar('Template Name is required.', 'error');
+      return;
+    }
+    if (!template.pages[0] || template.pages[0].fields.length === 0) {
+      showSnackbar('Template must have at least one field.', 'error');
+      return;
+    }
+
+    setLoading(true);
+    showSnackbar('Saving as new template...', 'info');
+
+    try {
+      // Create a payload with the new name
+      const payload = {
+        templateName: newName,
+        templateData: { ...template, template_name: newName },
+      };
+      
+      // Always use the POST endpoint to create a new template
+      const res = await apiClient.async_post('/print-templates', payload);
+
+      if (res.success && res.template) {
+        showSnackbar('Template saved successfully as a new entry!', 'success');
+        await fetchTemplates(); // Refresh the template list
+        loadTemplate(res.template); // Load the newly created template
+      } else {
+        throw new Error(res.message || 'Failed to save template');
+      }
+    } catch (err) {
+      showSnackbar(err.message, 'error');
+    } finally {
+      setLoading(false);
+    }
+  };
 
   // Delete template confirmation handler
   const handleDeleteTemplate = async () => {
@@ -526,9 +562,19 @@ export default function PrintDesigner({ user }) {
 
   // Render UI
   return (
-    <Box sx={{ display: 'flex', flexDirection: 'column', height: '100vh', bgcolor: 'grey.100' }}>
+    <Box sx={{ 
+      display: 'flex', 
+      flexDirection: 'column', 
+      height: '100vh', 
+      bgcolor: 'grey.100',
+      overflow: 'hidden' // Prevent scrolling on the main container
+    }}>
       {/* MS Word-like Ribbon AppBar */}
-      <AppBar position="static" color="default" elevation={2} sx={{ background: "#E3EFFF", minHeight: "64px", boxShadow: "0 2px 4px #a0b7e2" }}>
+      <Box sx={{ flexShrink: 0 }}>
+        <AppBar position="static" color="default" elevation={2} sx={{ 
+          background: "#E3EFFF", 
+          minHeight: "64px"
+        }}>
         <Toolbar variant="regular" sx={{ alignItems: 'flex-end', minHeight: 60, padding: 0, pl: 2, pr: 0 }}>
           <Tabs value={mainTab} onChange={(e, v) => setMainTab(v)} indicatorColor="primary" textColor="primary"
             sx={{ minHeight: 48, height: 48, '.MuiTab-root': { fontWeight: 700, paddingLeft: 3, paddingRight: 3, minHeight: 48 } }}>
@@ -547,16 +593,21 @@ export default function PrintDesigner({ user }) {
             </Button>
           </Stack>
         </Toolbar>
-      </AppBar>
+              </AppBar>
+      </Box>
 
+      {/* Ribbon Controls */}
       <Box sx={{
-        height: '64px', background: "#e3f1ff", borderBottom: '2px solid #bdd1ea', display: 'flex',
-        alignItems: 'center', pl: 3, pr: 2, boxSizing: "border-box"
+        height: '64px', 
+        background: "#e3f1ff", 
+        borderBottom: '2px solid #bdd1ea', 
+        display: 'flex',
+        alignItems: 'center', 
+        pl: 3, 
+        pr: 2, 
+        boxSizing: "border-box", 
+        flexShrink: 0
       }}>
-        <Box sx={{
-        height: '64px', background: "#e3f1ff", borderBottom: '2px solid #bdd1ea', display: 'flex',
-        alignItems: 'center', pl: 3, pr: 2, boxSizing: "border-box"
-        }}></Box>
         {/* File Tab */}
         {mainTab === 0 && (
           <Stack direction="row" spacing={2} alignItems="center" sx={{ width: "100%" }}>
@@ -579,6 +630,7 @@ export default function PrintDesigner({ user }) {
               sx={{ bgcolor: 'white', minWidth: 180 }}
             />
             <Button startIcon={<SaveIcon />} variant="contained" onClick={handleSaveTemplate} disabled={loading}>{loading ? 'Saving...' : 'Save'}</Button>
+            <Button startIcon={<SaveAsIcon />} variant="outlined" onClick={handleSaveAsNew} disabled={loading || currentTemplateId === 'new'}> Save As New </Button>
             <Button startIcon={<DeleteIcon />} variant="outlined" color="error" onClick={() => setConfirmDeleteOpen(true)} disabled={currentTemplateId === 'new'}>Delete</Button>
           </Stack>
         )}
@@ -693,121 +745,141 @@ export default function PrintDesigner({ user }) {
         )}
       </Box>
 
-      {/* Canvas & Pagination */}
-      <Box sx={{ flexGrow: 1, p: 3, overflow: 'auto', display: 'flex', justifyContent: 'center', alignItems: 'flex-start', background: 'linear-gradient(180deg,#f6f8fd 0,#e8eef7 100%)' }}>
-        {activePage &&
-        <Paper
-          elevation={6}
-          sx={{
-            position: 'relative',
-            transform: `scale(${zoom})`,
-            transformOrigin: 'top center',
-            transition: 'transform 0.15s ease',
-            width: mmToPx(template.width_mm),
-            height: mmToPx(template.height_mm),
-            flexShrink: 0,
-            my: 2,
-            backgroundColor: activePage.backgroundColor,
-            backgroundImage: design_mode && activePage.backgroundImage ? `url(${activePage.backgroundImage})` : 'none',
-            backgroundSize: 'cover',
-            backgroundPosition: 'center',
-            overflow: 'visible'
-          }}
-          onClick={() => setMeta({ selectedFieldId: null })}
-        >
-          <Box
-            sx={{
-              position: 'absolute', pointerEvents: 'none',
-              top: mmToPx(activePage.margin_top_mm), left: mmToPx(activePage.margin_left_mm),
-              right: mmToPx(activePage.margin_right_mm), bottom: mmToPx(activePage.margin_bottom_mm),
-              zIndex: 0
-            }}
-          >
-            {activePage.fields.map(field => (
-              <Rnd
-                key={field.id}
-                bounds="parent"
-                enableResizing={{ top:false, right:true, bottom:true, left:false, topRight:false, bottomRight:true, bottomLeft:false, topLeft:false }}
-                position={{ x: mmToPx(field.x_mm), y: mmToPx(field.y_mm) }}
-                size={{ width: mmToPx(field.width_mm), height: mmToPx(field.height_mm) }}
-                onDragStop={(e, d) => { setFieldProperty(field.id, 'x_mm', pxToMm(d.x)); setFieldProperty(field.id, 'y_mm', pxToMm(d.y)); }}
-                onResizeStop={(e, dir, ref, delta, pos) => {
-                  setFieldProperty(field.id, 'width_mm', pxToMm(ref.offsetWidth));
-                  setFieldProperty(field.id, 'height_mm', pxToMm(ref.offsetHeight));
-                  setFieldProperty(field.id, 'x_mm', pxToMm(pos.x));
-                  setFieldProperty(field.id, 'y_mm', pxToMm(pos.y));
-                }}
-                onClick={(e) => { e.stopPropagation(); setMeta({ selectedFieldId: field.id, editingFieldId: null }); setMainTab(1); }}
-                disableDragging={editingFieldId === field.id}
-                style={{
-                  pointerEvents: 'all',
-                  display: field.enabled === false ? 'none' : 'flex',
-                  cursor: 'move',
-                  border: `2px solid ${selectedFieldId === field.id ? '#1976d2' : 'transparent'}`,
-                  boxSizing: 'border-box',
-                  zIndex: 4
+      {/* Canvas & Main Content Area */}
+      <Box sx={{ 
+        flexGrow: 1,
+        display: 'flex',
+        flexDirection: 'column',
+        minHeight: 0, // Critical for flex child to properly constrain height
+        overflow: 'hidden' // Prevent overflow on container
+      }}>
+        {/* Canvas Container with Scroll */}
+        <Box sx={{ 
+          flexGrow: 1,
+          overflow: 'auto', // Only this section scrolls
+          p: 3, 
+          display: 'flex', 
+          justifyContent: 'center', 
+          alignItems: 'flex-start',
+          background: 'linear-gradient(180deg,#f6f8fd 0,#e8eef7 100%)',
+          minHeight: 0 // Critical for proper scrolling behavior
+        }}>
+          {activePage &&
+            <Paper
+              elevation={6}
+              sx={{
+                position: 'relative',
+                transform: `scale(${zoom})`,
+                transformOrigin: 'top center',
+                transition: 'transform 0.15s ease',
+                width: mmToPx(template.width_mm),
+                height: mmToPx(template.height_mm),
+                flexShrink: 0,
+                my: 2,
+                backgroundColor: activePage.backgroundColor,
+                backgroundImage: design_mode && activePage.backgroundImage ? `url(${activePage.backgroundImage})` : 'none',
+                backgroundSize: 'cover',
+                backgroundPosition: 'center',
+                overflow: 'visible'
+              }}
+              onClick={() => setMeta({ selectedFieldId: null })}
+            >
+              <Box
+                sx={{
+                  position: 'absolute', pointerEvents: 'none',
+                  top: mmToPx(activePage.margin_top_mm), left: mmToPx(activePage.margin_left_mm),
+                  right: mmToPx(activePage.margin_right_mm), bottom: mmToPx(activePage.margin_bottom_mm),
+                  zIndex: 0
                 }}
               >
-                {/* Field Rendering for All Types */}
-                {field.type === 'photo' && (
-                  <img
-                    src={previewData.photo}
-                    alt="participant"
-                    style={{
-                      width: '100%',
-                      height: '100%',
-                      objectFit: 'cover',
-                      borderRadius: field.frame === 'circle' ? '50%' : '0'
+                {activePage.fields.map(field => (
+                  <Rnd
+                    key={field.id}
+                    bounds="parent"
+                    enableResizing={{ top:false, right:true, bottom:true, left:false, topRight:false, bottomRight:true, bottomLeft:false, topLeft:false }}
+                    position={{ x: mmToPx(field.x_mm), y: mmToPx(field.y_mm) }}
+                    size={{ width: mmToPx(field.width_mm), height: mmToPx(field.height_mm) }}
+                    onDragStop={(e, d) => { setFieldProperty(field.id, 'x_mm', pxToMm(d.x)); setFieldProperty(field.id, 'y_mm', pxToMm(d.y)); }}
+                    onResizeStop={(e, dir, ref, delta, pos) => {
+                      setFieldProperty(field.id, 'width_mm', pxToMm(ref.offsetWidth));
+                      setFieldProperty(field.id, 'height_mm', pxToMm(ref.offsetHeight));
+                      setFieldProperty(field.id, 'x_mm', pxToMm(pos.x));
+                      setFieldProperty(field.id, 'y_mm', pxToMm(pos.y));
                     }}
-                  />
-                )}
-                {field.type === 'contact_qr' && (
-                  <QRCodeSVG value={generateVCardString(previewData)} style={{ width: '95%', height: '95%' }} />
-                )}
-                {field.type === 'qr' && (
-                  <QRCodeSVG value={previewData.regno || ''} fgColor={field.color} bgColor={field.bgColor} style={{ width: '95%', height: '95%' }}/>
-                )}
-                {field.type === 'text' && (
-                  <Box sx={{
-                    width: '100%',
-                    height: '100%',
-                    display: 'flex',
-                    overflow: 'hidden',
-                    whiteSpace: 'nowrap',
-                    alignItems: 'center',
-                    padding: '0 4px',
-                    justifyContent: field.align === 'center' ? 'center' : field.align === 'right' ? 'flex-end' : 'flex-start',
-                    fontFamily: field.fontFamily,
-                    fontSize: field.fontSize,
-                    color: field.color,
-                    fontWeight: field.bold ? '700' : '400',
-                    fontStyle: field.italic ? 'italic' : 'normal',
-                    textDecoration: field.underline ? 'underline' : 'none',
-                  }}>
-                    {(field.placeholder || '').replaceAll('{{name}}', previewData.name || '')
-                                              .replaceAll('{{role}}', previewData.role || '')
-                                              .replaceAll('{{regno}}', previewData.regno || '')
-                                              .replaceAll('{{email}}', previewData.email || '')
-                                              .replaceAll('{{phone}}', previewData.phone || '')
-                                              .replaceAll('{{date}}', new Date().toLocaleDateString('en-IN'))
-                    }
-                  </Box>
-                )}
-              </Rnd>
-            ))}
-          </Box>
-        </Paper>
-        }
-      </Box>
+                    onClick={(e) => { e.stopPropagation(); setMeta({ selectedFieldId: field.id, editingFieldId: null }); setMainTab(1); }}
+                    disableDragging={editingFieldId === field.id}
+                    style={{
+                      pointerEvents: 'all',
+                      display: field.enabled === false ? 'none' : 'flex',
+                      cursor: 'move',
+                      border: `2px solid ${selectedFieldId === field.id ? '#1976d2' : 'transparent'}`,
+                      boxSizing: 'border-box',
+                      zIndex: 4
+                    }}
+                  >
+                    {/* Field Rendering for All Types */}
+                    {field.type === 'photo' && (
+                      <img
+                        src={previewData.photo}
+                        alt="participant"
+                        style={{
+                          width: '100%',
+                          height: '100%',
+                          objectFit: 'cover',
+                          borderRadius: field.frame === 'circle' ? '50%' : '0'
+                        }}
+                      />
+                    )}
+                    {field.type === 'contact_qr' && (
+                      <QRCodeSVG value={generateVCardString(previewData)} style={{ width: '95%', height: '95%' }} />
+                    )}
+                    {field.type === 'qr' && (
+                      <QRCodeSVG value={previewData.regno || ''} fgColor={field.color} bgColor={field.bgColor} style={{ width: '95%', height: '95%' }}/>
+                    )}
+                    {field.type === 'text' && (
+                      <Box sx={{
+                        width: '100%',
+                        height: '100%',
+                        display: 'flex',
+                        overflow: 'hidden',
+                        whiteSpace: 'nowrap',
+                        alignItems: 'center',
+                        padding: '0 4px',
+                        justifyContent: field.align === 'center' ? 'center' : field.align === 'right' ? 'flex-end' : 'flex-start',
+                        fontFamily: field.fontFamily,
+                        fontSize: field.fontSize,
+                        color: field.color,
+                        fontWeight: field.bold ? '700' : '400',
+                        fontStyle: field.italic ? 'italic' : 'normal',
+                        textDecoration: field.underline ? 'underline' : 'none',
+                      }}>
+                        {(field.placeholder || '').replaceAll('{{name}}', previewData.name || '')
+                                                  .replaceAll('{{role}}', previewData.role || '')
+                                                  .replaceAll('{{regno}}', previewData.regno || '')
+                                                  .replaceAll('{{email}}', previewData.email || '')
+                                                  .replaceAll('{{phone}}', previewData.phone || '')
+                                                  .replaceAll('{{date}}', new Date().toLocaleDateString('en-IN'))
+                        }
+                      </Box>
+                    )}
+                  </Rnd>
+                ))}
+              </Box>
+            </Paper>
+          }
+        </Box>
 
-      {/* Page navigation */}
-      <Paper square elevation={2} sx={{p:0.5, backgroundColor: '#f5f5f5'}}>
-        <Stack direction="row" alignItems="center" spacing={1.5} justifyContent="flex-end" px={2}>
-          <IconButton onClick={() => setMeta({ activePageIndex: Math.max(0, activePageIndex - 1)})} disabled={activePageIndex === 0} size="small"><NavigateBefore /></IconButton>
-          <Typography variant="body2">Page {activePageIndex + 1} of {template.pages.length}</Typography>
-          <IconButton onClick={() => setMeta({ activePageIndex: Math.min(template.pages.length - 1, activePageIndex + 1)})} disabled={activePageIndex >= template.pages.length - 1} size="small"><NavigateNext /></IconButton>
-        </Stack>
-      </Paper>
+        {/* Page navigation - Fixed at bottom */}
+        <Box sx={{ flexShrink: 0 }}>
+          <Paper square elevation={2} sx={{p:0.5, backgroundColor: '#f5f5f5' }}>
+            <Stack direction="row" alignItems="center" spacing={1.5} justifyContent="flex-end" px={2}>
+              <IconButton onClick={() => setMeta({ activePageIndex: Math.max(0, activePageIndex - 1)})} disabled={activePageIndex === 0} size="small"><NavigateBefore /></IconButton>
+              <Typography variant="body2">Page {activePageIndex + 1} of {template.pages.length}</Typography>
+              <IconButton onClick={() => setMeta({ activePageIndex: Math.min(template.pages.length - 1, activePageIndex + 1)})} disabled={activePageIndex >= template.pages.length - 1} size="small"><NavigateNext /></IconButton>
+            </Stack>
+          </Paper>
+        </Box>
+      </Box>
 
       {/* Template Delete Dialog */}
       <Dialog open={confirmDeleteOpen} onClose={() => setConfirmDeleteOpen(false)}>

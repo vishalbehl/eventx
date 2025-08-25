@@ -42,6 +42,7 @@ export default function Settings({ onConnect, isDbConnected, onResetApp }) {
     const [userError, setUserError] = useState('');
     const [activeEventId, setActiveEventId] = useState(null);
     const [showPassword, setShowPassword] = useState(false);
+    const [uploadStatus, setUploadStatus] = useState({ msg: '', sev: 'info', loading: false });
 
     useEffect(() => {
         const loadInitialData = async () => {
@@ -391,6 +392,22 @@ export default function Settings({ onConnect, isDbConnected, onResetApp }) {
         }
     };
 
+    const handleUpload = async () => {
+        setUploadStatus({ msg: 'Gathering local data and preparing to upload...', sev: 'info', loading: true });
+        const authToken = localStorage.getItem('authToken');
+        if (!authToken) {
+            setUploadStatus({ msg: 'You must be logged into the central server to upload data. Please log in first.', sev: 'error', loading: false });
+            return;
+        }
+
+        const result = await window.electronAPI.uploadLocalData(authToken);
+        setUploadStatus({
+            msg: result.message,
+            sev: result.success ? 'success' : 'error',
+            loading: false
+        });
+};
+
     return (
         <Box>
             <AppBar position="static" color="default">
@@ -511,7 +528,6 @@ export default function Settings({ onConnect, isDbConnected, onResetApp }) {
             <TabPanel value={activeTab} index={1}>
                 <Typography variant="h5" gutterBottom>Data Synchronization</Typography>
                 <Alert severity={syncStatus.sev} sx={{ mb: 2 }}>{syncStatus.msg}</Alert>
-
                 {!isLoggedIn ? (
                     <Paper variant="outlined" sx={{ p: 2 }}>
                         <Typography variant="h6" gutterBottom>Connect to Central Server</Typography>
@@ -734,6 +750,27 @@ export default function Settings({ onConnect, isDbConnected, onResetApp }) {
                             </>
                         )}
                     </Paper>
+                )}
+                {config?.mode === 'local' && (
+                <Paper variant="outlined" sx={{ p: 2, mt: 4 }}>
+                    <Typography variant="h6" gutterBottom>Upload Local Data</Typography>
+                    <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+                        If this kiosk has been used offline, you can upload new registrations and check-ins to the central server. You must be logged in to the central server to perform this action.
+                    </Typography>
+                    
+                    {uploadStatus.msg && (
+                        <Alert severity={uploadStatus.sev} sx={{ mb: 2 }}>{uploadStatus.msg}</Alert>
+                    )}
+                    
+                    <Button
+                        variant="contained"
+                        color="success"
+                        onClick={handleUpload}
+                        disabled={uploadStatus.loading || !isLoggedIn}
+                    >
+                        {uploadStatus.loading ? <CircularProgress size={24}/> : 'Upload Local Changes to Server'}
+                    </Button>
+                </Paper>
                 )}
             </TabPanel>
 

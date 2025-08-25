@@ -14,6 +14,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // --- Startup & Authentication ---
   isDatabaseSeeded: () => ipcRenderer.invoke('is-database-seeded'),
   loginUser: (username, password) => ipcRenderer.invoke('login-user', { username, password }),
+  uploadLocalData: (authToken) => ipcRenderer.invoke('upload-local-data', authToken),
 
   // --- User Management (Mode-Aware) ---
   getUsers: () => ipcRenderer.invoke('get-users'),

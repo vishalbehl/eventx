@@ -1,4 +1,3 @@
-// FileName: MultipleFiles/PrintPreview.jsx
 // ===== PrintDesigner.jsx =====
 import React, { useState, useEffect } from 'react';
 import { useSearchParams } from 'react-router-dom';

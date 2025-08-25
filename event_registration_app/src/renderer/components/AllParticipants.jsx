@@ -11,11 +11,24 @@ import ReactDOMServer from 'react-dom/server';
 import jsPDF from 'jspdf';
 import html2canvas from 'html2canvas';
 
+const generateVCardString = (data) => (
+  `BEGIN:VCARD
+VERSION:3.0
+FN:${data.name || ''}
+ORG:${data.company || ''}
+TITLE:${data.designation || ''}
+TEL;TYPE=WORK,VOICE:${data.phone || ''}
+EMAIL:${data.email || ''}
+END:VCARD`
+);
+
+
 // Badge rendering helper
-const PrintableItem = ({ template, participant, qrToken }) => {
+const PrintableItem = ({ template, participant, qrToken, pageIndex = 0 }) => {
     if (!template?.template_data) return null;
     const { template_data } = template;
-    const page = template_data.pages[0];
+    const page = template_data.pages[pageIndex];
+    if (!page) return null;
 
     const tokenReplace = (text) => text?.replaceAll('{{name}}', participant.name || '')
                                         .replaceAll('{{regno}}', participant.regno || '')
@@ -60,10 +73,17 @@ const PrintableItem = ({ template, participant, qrToken }) => {
                         textDecoration: field.underline ? 'underline' : 'none',
                         whiteSpace: 'nowrap'
                     }}>
-                        {field.type === 'qr' 
-                            ? <QRCodeSVG value={qrToken || 'no-token'} size="100%" fgColor={field.color || '#000'} bgColor={field.bgColor || '#FFF'} />
-                            : tokenReplace(field.placeholder)
-                        }
+                        {/* ***** FIX: Added specific logic for 'contact_qr' and other types ***** */}
+                        {(() => {
+                            switch (field.type) {
+                                case 'qr':
+                                    return <QRCodeSVG value={qrToken || 'no-token'} size="100%" fgColor={field.color || '#000'} bgColor={field.bgColor || '#FFF'} />;
+                                case 'contact_qr':
+                                    return <QRCodeSVG value={generateVCardString(participant)} size="100%" fgColor="#000" bgColor="#FFF" />;
+                                default:
+                                    return tokenReplace(field.placeholder);
+                            }
+                        })()}
                     </div>
                 ))}
             </div>
@@ -160,22 +180,17 @@ export default function AllParticipants({ user }) {
     const handleSelect = id => setSelected(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
 
     const handlePrint = async (ids) => {
-        // This check is slightly different from your uploaded code to be more robust
         if (!ids || ids.length === 0) return showSnackbar('No participants selected.', 'warning');
         setPrintLoading(true);
         showSnackbar('Preparing to print...', 'info');
 
         try {
-            const eventId = user.assignedEventId;
-
-            // 1. Fetch the event details to get print_settings
-            const eventRes = await window.electronAPI.getEventById(eventId);
+            const eventRes = await window.electronAPI.getEventById(user.assignedEventId);
             if (!eventRes.success || !eventRes.event) {
                 throw new Error('Could not find event details. Printing is not configured.');
             }
-
-            // 2. Parse the print_settings from the event
-            let printSettings = eventRes.event.print_settings;
+            
+            let printSettings = eventRes.event.print_settings || {};
             if (typeof printSettings === 'string') {
                 printSettings = JSON.parse(printSettings || '{}');
             }
@@ -183,57 +198,81 @@ export default function AllParticipants({ user }) {
             const participantsToPrint = participants.filter(p => ids.includes(p.id));
             if (participantsToPrint.length === 0) throw new Error("Selected participants not found.");
 
-            // 3. Determine the correct template ID based on the participant's role
-            // This logic now correctly handles different templates for different roles if needed.
-            const firstParticipantRole = participantsToPrint[0].role;
-            const templateId = printSettings.useSingleBadgeTemplate
-                ? printSettings.singleBadgeTemplateId
-                : (printSettings.badgeAssignments || {})[firstParticipantRole];
+            const templateCache = {}; // Cache to avoid re-fetching the same template
+            let pdf = null; // Initialize PDF variable
 
-            if (!templateId) {
-                throw new Error(`No badge template is assigned for the role "${firstParticipantRole}". Check event settings.`);
-            }
-
-            // 4. Fetch the actual template data
-            const templateRes = await window.electronAPI.getTemplateById(templateId);
-            if (!templateRes.success || !templateRes.template) {
-                throw new Error('The assigned print template could not be found or is corrupted.');
-            }
-            const template = templateRes.template;
-
-            // 5. Generate the PDF
-            const { width_mm, height_mm } = template.template_data;
-            const pdf = new jsPDF({
-                orientation: width_mm > height_mm ? 'landscape' : 'portrait',
-                unit: 'mm',
-                format: [width_mm, height_mm]
-            });
-
-            const printContainer = document.createElement('div');
-            document.body.appendChild(printContainer);
-            Object.assign(printContainer.style, { position: 'fixed', opacity: '0', zIndex: '-1', width: `${width_mm}mm`, height: `${height_mm}mm` });
-
+            // Loop through each selected participant
             for (let i = 0; i < participantsToPrint.length; i++) {
                 const participant = participantsToPrint[i];
-                if (i > 0) pdf.addPage([width_mm, height_mm], pdf.getFont().orientation);
-
-                const qrToken = participant.regno; // Using regno for the QR code
-
-                const badgeHtml = ReactDOMServer.renderToString(
-                    <PrintableItem template={template} participant={participant} qrToken={qrToken} />
-                );
-                printContainer.innerHTML = badgeHtml;
-                const canvas = await html2canvas(printContainer.children[0], { scale: 2, useCORS: true, backgroundColor: null });
                 
-                // Use JPEG for better compression and smaller file size
-                const imgData = canvas.toDataURL('image/jpeg', 0.9);
-                pdf.addImage(imgData, 'JPEG', 0, 0, width_mm, height_mm);
+                // Determine the correct template ID for THIS participant's role
+                const templateId = printSettings.useSingleBadgeTemplate
+                    ? printSettings.singleBadgeTemplateId
+                    : (printSettings.badgeAssignments || {})[participant.role];
+
+                if (!templateId) {
+                    console.warn(`Skipping print for ${participant.name}: No template assigned for role "${participant.role}".`);
+                    continue;
+                }
+                
+                // Fetch the template from cache or from the backend
+                let template = templateCache[templateId];
+                if (!template) {
+                    const templateRes = await window.electronAPI.getTemplateById(templateId);
+                    if (templateRes.success && templateRes.template) {
+                        template = templateRes.template;
+                        templateCache[templateId] = template;
+                    } else {
+                        console.warn(`Could not load template with ID ${templateId}. Skipping participant ${participant.name}.`);
+                        continue;
+                    }
+                }
+                
+                // Initialize the PDF on the first valid participant
+                if (!pdf) {
+                    const { width_mm, height_mm } = template.template_data;
+                    pdf = new jsPDF({
+                        orientation: width_mm > height_mm ? 'landscape' : 'portrait',
+                        unit: 'mm',
+                        format: [width_mm, height_mm]
+                    });
+                }
+                
+                const qrToken = participant.regno;
+
+                // Loop through EACH PAGE of the template (for front/back printing)
+                for (let pageIndex = 0; pageIndex < template.template_data.pages.length; pageIndex++) {
+                    const { width_mm, height_mm } = template.template_data;
+                    
+                    if (i > 0 || pageIndex > 0) {
+                        pdf.addPage([width_mm, height_mm], pdf.getFont().orientation);
+                    }
+                    
+                    const badgeHtml = ReactDOMServer.renderToString(
+                        <PrintableItem template={template} participant={participant} qrToken={qrToken} pageIndex={pageIndex} />
+                    );
+                    
+                    const printContainer = document.getElementById('print-container-temp') || document.createElement('div');
+                    printContainer.id = 'print-container-temp';
+                    document.body.appendChild(printContainer);
+                    Object.assign(printContainer.style, { position: 'fixed', opacity: '0', zIndex: '-1', width: `${width_mm}mm`, height: `${height_mm}mm` });
+
+                    printContainer.innerHTML = badgeHtml;
+                    const canvas = await html2canvas(printContainer.children[0], { scale: 2, useCORS: true, backgroundColor: null });
+                    const imgData = canvas.toDataURL('image/jpeg', 0.9);
+                    pdf.addImage(imgData, 'JPEG', 0, 0, width_mm, height_mm);
+
+                    document.body.removeChild(printContainer);
+                }
             }
 
-            document.body.removeChild(printContainer);
-            const blob = pdf.output('blob');
-            window.open(URL.createObjectURL(blob), '_blank');
-            showSnackbar('PDF generated successfully!', 'success');
+            if (pdf) {
+                const blob = pdf.output('blob');
+                window.open(URL.createObjectURL(blob), '_blank');
+                showSnackbar('PDF generated successfully!', 'success');
+            } else {
+                throw new Error("No valid templates found for the selected participants.");
+            }
 
         } catch (err) {
             showSnackbar(err.message || 'PDF generation failed.', 'error');
