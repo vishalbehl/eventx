@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Box, TextField, Button, Typography, Paper, Alert, CircularProgress } from '@mui/material';
-import { apiClient } from '../apiClient'; // This now correctly points to your central server client
+import { apiClient } from '../api/apiClient'; // This now correctly points to your central server client
 
 export default function SignIn({ onSignIn }) {
   const [username, setUsername] = useState('');

@@ -3,9 +3,9 @@ import React, { useState } from 'react';
 import { Box, Typography, TextField, Button, Paper, Alert, CircularProgress, MenuItem, Select, FormControl, InputLabel } from '@mui/material';
 
 const ServerDbSetup = ({ onSetupComplete, onGoBack }) => {
-  const [dbType, setDbType] = useState('mysql'); // 'mysql' or 'postgres'
+  const [dbType, setDbType] = useState('postgres'); // 'mysql' or 'postgres'
   const [host, setHost] = useState('localhost');
-  const [port, setPort] = useState(3306);
+  const [port, setPort] = useState(5432);
   const [dbName, setDbName] = useState('');
   const [user, setUser] = useState('');
   const [password, setPassword] = useState('');

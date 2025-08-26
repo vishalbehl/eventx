@@ -57,7 +57,6 @@ async function assignEventToUser(userId, eventId) {
     return result.rows[0];
 }
 
-
 /* ==============================
    EVENT MANAGEMENT
 ============================== */
@@ -72,20 +71,11 @@ async function addEvent(name, description, startDate, endDate, orgName, orgEmail
 
 async function updateEvent(id, data) {
     const {
-        name,
-        description,
-        start_date,
-        end_date,
-        organiser_name,
-        organiser_email,
-        organiser_phone,
-        roles,
-        print_settings,
-        local_admin_ids
+        name, description, start_date, end_date, organiser_name, organiser_email, 
+        organiser_phone, roles, print_settings, local_admin_ids, is_ticketing_enabled,
+        website, state, country // New fields
     } = data;
 
-    // --- THIS IS THE FIX for the JSON error ---
-    // Stringify the objects before sending them to the database.
     const rolesJson = JSON.stringify(roles);
     const printSettingsJson = JSON.stringify(print_settings);
 
@@ -93,9 +83,14 @@ async function updateEvent(id, data) {
         `UPDATE events
          SET name = $1, description = $2, start_date = $3, end_date = $4,
              organiser_name = $5, organiser_email = $6, organiser_phone = $7,
-             roles = $8, print_settings = $9, local_admin_ids = $10
-         WHERE id = $11 RETURNING *`,
-        [name, description, start_date, end_date, organiser_name, organiser_email, organiser_phone, rolesJson, printSettingsJson, local_admin_ids, id]
+             roles = $8, print_settings = $9, local_admin_ids = $10,
+             is_ticketing_enabled = $11, website = $12, state = $13, country = $14
+         WHERE id = $15 RETURNING *`,
+        [
+            name, description, start_date, end_date, organiser_name, organiser_email, 
+            organiser_phone, rolesJson, printSettingsJson, local_admin_ids,
+            is_ticketing_enabled, website, state, country, id
+        ]
     );
     return result.rows[0];
 }
@@ -130,6 +125,69 @@ async function getEventById(eventId) {
     const result = await query(`SELECT * FROM events WHERE id = $1`, [eventId]);
     return result.rows[0];
 }
+
+/* ==============================
+   VENUE MANAGEMENT (NEW)
+============================== */
+async function getVenuesForEvent(eventId) {
+    const result = await query(`SELECT * FROM venues WHERE event_id = $1 ORDER BY date`, [eventId]);
+    return result.rows;
+}
+
+async function addVenue(data) {
+    const { event_id, name, address, date } = data;
+    const result = await query(
+        `INSERT INTO venues (event_id, name, address, date) VALUES ($1, $2, $3, $4) RETURNING *`,
+        [event_id, name, address, date]
+    );
+    return result.rows[0];
+}
+
+async function updateVenue(venueId, data) {
+    const { name, address, date } = data;
+    const result = await query(
+        `UPDATE venues SET name = $1, address = $2, date = $3 WHERE id = $4 RETURNING *`,
+        [name, address, date, venueId]
+    );
+    return result.rows[0];
+}
+
+async function deleteVenue(venueId) {
+    const result = await query(`DELETE FROM venues WHERE id = $1`, [venueId]);
+    return { changes: result.rowCount };
+}
+
+/* ==============================
+   HALL MANAGEMENT (NEW)
+============================== */
+async function getHallsForEvent(eventId) {
+    const result = await query(`SELECT * FROM halls WHERE event_id = $1 ORDER BY name`, [eventId]);
+    return result.rows;
+}
+
+async function addHall(data) {
+    const { event_id, name, capacity } = data;
+    const result = await query(
+        `INSERT INTO halls (event_id, name, capacity) VALUES ($1, $2, $3) RETURNING *`,
+        [event_id, name, capacity]
+    );
+    return result.rows[0];
+}
+
+async function updateHall(hallId, data) {
+    const { name, capacity } = data;
+    const result = await query(
+        `UPDATE halls SET name = $1, capacity = $2 WHERE id = $3 RETURNING *`,
+        [name, capacity, hallId]
+    );
+    return result.rows[0];
+}
+
+async function deleteHall(hallId) {
+    const result = await query(`DELETE FROM halls WHERE id = $1`, [hallId]);
+    return { changes: result.rowCount };
+}
+
 
 /* ==============================
    PARTICIPANT MANAGEMENT
@@ -169,7 +227,6 @@ async function getParticipants(eventId, filters = {}) {
     const result = await query(queryStr, params);
     return result.rows;
 }
-
 
 async function getParticipantByRegno(eventId, regno) {
     const result = await query(
@@ -212,15 +269,32 @@ async function getParticipantsByIds(eventId, ids) {
 /* ==============================
    CHECK-INS & SESSIONS
 ============================== */
-
 /**
- * --- UPDATED: This function now respects the `max_checkins` limit ---
  * Adds a check-in record for a participant.
  */
 async function addCheckIn(eventId, participantId, sessionId) {
-    // Get the session's check-in limit
-    const sessionRes = await query(`SELECT max_checkins FROM sessions WHERE id = $1`, [sessionId]);
-    const maxCheckins = sessionRes.rows[0]?.max_checkins || 1;
+    // Get session info
+    const sessionRes = await query(
+      `SELECT max_checkins, allowed_roles FROM sessions WHERE id = $1`,
+      [sessionId]
+    );
+    if (sessionRes.rows.length === 0) throw new Error("Session not found");
+
+    const { max_checkins, allowed_roles } = sessionRes.rows[0];
+    const maxCheckins = max_checkins || 1;
+
+    // Get participant role
+    const pRes = await query(`SELECT role FROM participants WHERE id = $1`, [participantId]);
+    if (pRes.rows.length === 0) throw new Error("Participant not found");
+    const participantRole = pRes.rows[0].role;
+
+    // Role check
+    if (allowed_roles && allowed_roles !== "All") {
+      const rolesAllowed = allowed_roles.split(",").map(r => r.trim());
+      if (!rolesAllowed.includes(participantRole)) {
+        return { not_allowed: true, reason: "Role not permitted" };
+      }
+    }
 
     // Count existing check-ins for this participant and session
     const countRes = await query(
@@ -229,12 +303,11 @@ async function addCheckIn(eventId, participantId, sessionId) {
     );
     const existingCheckinCount = parseInt(countRes.rows[0].count, 10);
 
-    // If the count has reached the max limit, return a "limit reached" status
     if (existingCheckinCount >= maxCheckins) {
       return { limit_reached: true, count: existingCheckinCount, limit: maxCheckins };
     }
 
-    // Otherwise, insert a new check-in record
+    // Insert check-in
     const result = await query(
         `INSERT INTO check_ins (event_id, participant_id, session_id)
          VALUES ($1, $2, $3) RETURNING *`,
@@ -259,23 +332,31 @@ async function getCheckInsBySession(eventId, sessionId) {
  * --- UPDATED: Now includes the `maxCheckins` parameter ---
  * Adds a new session for an event.
  */
-async function addSession(eventId, sessionDate, name, maxCheckins = 1) {
+async function addSession(eventId, sessionDate, name, maxCheckins, hall_id, allowed_roles) {
     const result = await query(
-        `INSERT INTO sessions (event_id, session_date, name, max_checkins)
-         VALUES ($1, $2, $3, $4) RETURNING *`,
-        [eventId, sessionDate, name, maxCheckins]
+        `INSERT INTO sessions (event_id, session_date, name, max_checkins, hall_id, allowed_roles)
+         VALUES ($1, $2, $3, $4, $5, $6::text[]) RETURNING *`,
+        [
+          eventId,
+          sessionDate,
+          name,
+          maxCheckins,
+          hall_id || null,
+          allowed_roles && Array.isArray(allowed_roles) ? allowed_roles : ['All']
+        ]
     );
     return result.rows[0];
 }
 
+
 /**
- * --- UPDATED: Now includes the `maxCheckins` parameter ---
  * Updates an existing session.
  */
-async function updateSession(sessionId, name, sessionDate, maxCheckins) {
+async function updateSession(sessionId, name, sessionDate, maxCheckins, hall_id, allowed_roles) {
     const result = await query(
-        `UPDATE sessions SET name = $1, session_date = $2, max_checkins = $3 WHERE id = $4 RETURNING *`,
-        [name, sessionDate, maxCheckins, sessionId]
+        `UPDATE sessions SET name = $1, session_date = $2, max_checkins = $3, hall_id = $4, allowed_roles = $5 
+         WHERE id = $6 RETURNING *`,
+        [name, sessionDate, maxCheckins, hall_id || null, allowed_roles || null, sessionId]
     );
     return result.rows[0];
 }
@@ -607,20 +688,111 @@ async function updateEventSyncTimestamp(eventId) {
     return { changes: result.rowCount };
 }
 
-// UPDATE module.exports TO INCLUDE THE NEW FUNCTIONS
+/* ==============================
+   TICKETING MATRIX MANAGEMENT
+============================== */
+/**
+ * Fetches all pricing data for a specific event to populate the matrix UI.
+ * @param {number} eventId The ID of the event.
+ * @returns {Array} An array of objects, e.g., [{ role_name, tier_name, price }]
+ */
+async function getEventPricing(eventId) {
+    const result = await query(`SELECT role_name, tier_name, price FROM ticket_types WHERE event_id = $1`, [eventId]);
+    return result.rows;
+}
+
+/**
+ * Saves the entire pricing matrix for an event.
+ * It deletes old price points not in the new submission and then "upserts"
+ * (inserts or updates) all current price points.
+ * @param {number} eventId The ID of the event.
+ * @param {object} pricingData The pricing data object from the frontend, e.g., { 'Delegate_Standard': 5000 }
+ */
+async function saveEventPricing(eventId, pricingData) {
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+
+        // This query deletes any role/tier combinations for the event that are
+        // NOT present in the latest submission from the frontend.
+        const deleteQuery = `
+            DELETE FROM ticket_types
+            WHERE event_id = $1 AND (role_name, tier_name) NOT IN (
+                SELECT
+                    split_part(key, ',', 1),
+                    split_part(key, ',', 2)
+                FROM unnest($2::text[]) as t(key)
+            )
+        `;
+        
+        const compositeKeys = Object.keys(pricingData).map(key => key.replace('_', ','));
+
+        if (compositeKeys.length > 0) {
+            await client.query(deleteQuery, [eventId, compositeKeys]);
+        } else {
+             // If the submission is empty, delete all pricing for the event
+             await client.query(`DELETE FROM ticket_types WHERE event_id = $1`, [eventId]);
+        }
+
+        // Now, insert or update all the submitted price points
+        const upsertQuery = `
+            INSERT INTO ticket_types (event_id, role_name, tier_name, price)
+            VALUES ($1, $2, $3, $4)
+            ON CONFLICT (event_id, role_name, tier_name) 
+            DO UPDATE SET price = EXCLUDED.price;
+        `;
+
+        for (const [key, price] of Object.entries(pricingData)) {
+            const [role_name, tier_name] = key.split('_');
+            const priceValue = (price === '' || price === null) ? null : parseFloat(price);
+            
+            // Only save if there is a valid price value
+            if (role_name && tier_name && priceValue !== null) {
+                await client.query(upsertQuery, [eventId, role_name, tier_name, priceValue]);
+            }
+        }
+        
+        await client.query('COMMIT');
+    } catch (e) {
+        await client.query('ROLLBACK');
+        throw e; // Re-throw the error to be caught by the server handler
+    } finally {
+        client.release();
+    }
+}
+
 module.exports = {
     query,
+    // User functions...
     createUser,
     getUserByUsername,
     getAllUsers,
     deleteUser,
     assignEventToUser,
+    // Event functions...
     addEvent,
     updateEvent,
     deleteEvent,
     getAllEventsWithStats,
-    deleteAllSessionsForEvent,
     getEventById,
+    // Venue Functions (NEW)
+    getVenuesForEvent,
+    addVenue,
+    updateVenue,
+    deleteVenue,
+    // Hall Functions (NEW)
+    getHallsForEvent,
+    addHall,
+    updateHall,
+    deleteHall,
+    // Session Functions...
+    addSession,
+    updateSession,
+    deleteSession,
+    getSessionsByEvent,
+    deleteAllSessionsForEvent,
+    // Other existing functions...
+    getDashboardStats,
     addParticipant,
     updateParticipant,
     getParticipants,
@@ -630,17 +802,11 @@ module.exports = {
     getNextRegNo,
     addCheckIn,
     getCheckInsBySession,
-    addSession,
-    updateSession,
-    deleteSession,
-    getSessionsByEvent,
-    getDashboardStats,
     addPrintTemplate,
     updatePrintTemplate,
     deletePrintTemplate,
     getAllPrintTemplates,
     getPrintTemplateById,
-    // NEW FUNCTIONS FOR SYNCING
     getFullEventData,
     getUpdatesSince,
     bulkUpsertParticipants,
@@ -648,4 +814,6 @@ module.exports = {
     bulkUpsertSessions,
     bulkUpsertPrintTemplates,
     updateEventSyncTimestamp,
+    getEventPricing,
+    saveEventPricing,
 };

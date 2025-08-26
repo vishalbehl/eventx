@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Box, Typography, Paper, TextField, Button, CircularProgress, Alert, Grid } from '@mui/material';
-import { apiClient } from '../apiClient'; // Use the central server client
+import { apiClient } from '../api/apiClient'; // Use the central server client
 import { useNavigate } from 'react-router-dom';
 
 export default function AddEvent() {

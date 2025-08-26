@@ -12,6 +12,28 @@ async function hashPassword(password) {
   return await bcrypt.hash(password, salt);
 }
 
+async function runMigrations(db) {
+  return new Promise((resolve, reject) => {
+    db.all("PRAGMA table_info(users)", (err, columns) => {
+      if (err) return reject(err);
+      
+      const columnExists = columns.some(col => col.name === 'assigned_kiosk_name');
+
+      if (!columnExists) {
+        console.log('Running migration: Adding "assigned_kiosk_name" to users table...');
+        db.run("ALTER TABLE users ADD COLUMN assigned_kiosk_name TEXT", (alterErr) => {
+          if (alterErr) return reject(alterErr);
+          console.log('Migration successful.');
+          resolve();
+        });
+      } else {
+        // Column already exists, no migration needed
+        resolve();
+      }
+    });
+  });
+}
+
 function createLocalDatabase({ folderPath, dbName }) {
   if (!folderPath || !dbName) {
     throw new Error('Folder path and database name must be provided for local database.');
@@ -32,6 +54,7 @@ function createLocalDatabase({ folderPath, dbName }) {
       console.log('✅ Connected to SQLite at', dbPath);
       try {
         await createTables();
+        await runMigrations(db); // <-- CALL THE NEW MIGRATION FUNCTION HERE
         resolve({ success: true, path: dbPath });
       } catch (err) {
         reject(err);
@@ -40,22 +63,22 @@ function createLocalDatabase({ folderPath, dbName }) {
   });
 }
 
-
 // ******** THIS IS THE UPDATED AND COMPLETED SCHEMA ********
 async function createTables() {
   const schema = `
-CREATE TABLE IF NOT EXISTS users (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  username TEXT UNIQUE,
-  password_hash TEXT,
-  role TEXT,
-  assigned_event_id INTEGER,
-  created_at TEXT,
-  updated_at TEXT,
-  allowed_ip TEXT,      -- ADD THIS LINE
-  allowed_mac TEXT,     -- ADD THIS LINE
-  needs_sync INTEGER DEFAULT 0
-);
+  CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT UNIQUE,
+    password_hash TEXT,
+    role TEXT,
+    assigned_event_id INTEGER,
+    assigned_kiosk_name TEXT, -- <-- FIX: ADDED MISSING COLUMN
+    created_at TEXT,
+    updated_at TEXT,
+    allowed_ip TEXT,
+    allowed_mac TEXT,
+    needs_sync INTEGER DEFAULT 0
+  );
 
   CREATE TABLE IF NOT EXISTS events (
     id INTEGER PRIMARY KEY, -- Not autoincrement, ID comes from central server
@@ -553,7 +576,7 @@ async function getEventRoles(eventId) {
       ? rolesData.filter(role => role.enabled === true) 
       : [];
     
-    console.log(`Found ${enabledRoles.length} enabled roles for event ${eventId}:`, enabledRoles);
+    // console.log(`Found ${enabledRoles.length} enabled roles for event ${eventId}:`, enabledRoles);
     return enabledRoles;
 
   } catch (error) {

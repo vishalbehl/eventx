@@ -120,7 +120,7 @@ function App() {
       } else {
         await window.electronAPI.createServerDb(settings);
       }
-      await window.electronAPI.saveConfig(settings);
+      // await window.electronAPI.saveConfig(settings);
       setAppStatus('login');
     } catch (err) {
       console.error('Error during setup:', err);

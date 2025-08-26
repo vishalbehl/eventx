@@ -6,7 +6,7 @@ import {
 } from '@mui/material';
 import { Link } from 'react-router-dom';
 import * as XLSX from 'xlsx';
-import { apiClient } from '../apiClient';
+import { apiClient } from '../api/apiClient';
 import { findKiosksOnNetwork, pushEventToKiosk } from '../networkScanner';
 import SendToMobileIcon from '@mui/icons-material/SendToMobile';
 import RefreshIcon from '@mui/icons-material/Refresh';

@@ -14,14 +14,14 @@ import ViewListIcon from '@mui/icons-material/ViewList';
 import PrintIcon from '@mui/icons-material/Print';
 
 // Eagerly load SignIn
-import SignIn from './components/Signin';
+import SignIn from './pages/Signin';
 
 // Lazily load Admin components
-const AddEvent = React.lazy(() => import('./components/AddEvent'));
-const EventView = React.lazy(() => import('./components/EventView'));
-const EditEvent = React.lazy(() => import('./components/EditEvent'));
-const Settings = React.lazy(() => import('./components/Settings'));
-const PrintDesigner = React.lazy(() => import('./components/PrintDesigner'));
+const AddEvent = React.lazy(() => import('./pages/AddEvent'));
+const EventView = React.lazy(() => import('./pages/EventView'));
+const EditEvent = React.lazy(() => import('./pages/EditEvent'));
+const Settings = React.lazy(() => import('./pages/Settings'));
+const PrintDesigner = React.lazy(() => import('./pages/PrintDesigner'));
 
 const drawerWidth = 240;
 const theme = createTheme();

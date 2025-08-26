@@ -2,7 +2,6 @@
 require('dotenv').config();
 const { app, BrowserWindow, ipcMain, dialog } = require('electron');
 const path = require('path');
-// CORRECTED IMPORT SYNTAX FOR ELECTRON-STORE
 const Store = require('electron-store').default;
 const os = require('os');
 const jwt = require('jsonwebtoken');
@@ -149,12 +148,26 @@ ipcMain.handle('select-local-db-folder', async () => {
   return { success: true, path: filePaths[0] };
 });
 
+ipcMain.handle('reset-active-event', async () => {
+  try {
+    store.delete('activeEventId');
+    return { success: true, message: 'Active event has been reset.' };
+  } catch (err) {
+    return { success: false, message: err.message };
+  }
+});
+
+
 // ******** THIS IS THE CORRECTED FUNCTION ********
 ipcMain.handle('create-local-db', async (_, settings) => {
   try {
+    // This part attempts to create the database file.
     const result = await localDb.createLocalDatabase(settings);
+    
     if (result.success) {
-        // The bug was here. We must now save the complete configuration.
+        // ***** THE FIX IS HERE *****
+        // This ensures the config is saved with the correct property names
+        // that the app expects on restart ('folderPath' and 'dbName').
         store.set('dbConfig', {
             mode: 'local',
             folderPath: settings.folderPath,

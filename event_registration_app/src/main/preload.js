@@ -10,6 +10,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   createLocalDb: (settings) => ipcRenderer.invoke('create-local-db', settings),
   createServerDb: (dbConfig) => ipcRenderer.invoke('create-server-db', dbConfig),
   getNetworkInfo: () => ipcRenderer.invoke('get-network-info'),
+  resetActiveEvent: () => ipcRenderer.invoke('reset-active-event'),
 
   // --- Startup & Authentication ---
   isDatabaseSeeded: () => ipcRenderer.invoke('is-database-seeded'),

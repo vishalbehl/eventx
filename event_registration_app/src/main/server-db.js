@@ -395,10 +395,10 @@ async function clearAndSeedDataFromServer(config, data) {
         await client.query('BEGIN');
 
         // Clear existing data
-        await client.query('DELETE FROM check_ins WHERE event_id = $1', [event.id]);
-        await client.query('DELETE FROM participants WHERE event_id = $1', [event.id]);
-        await client.query('DELETE FROM sessions WHERE event_id = $1', [event.id]);
-        await client.query('DELETE FROM events WHERE id = $1', [event.id]);
+        await client.query('DELETE FROM check_ins');
+        await client.query('DELETE FROM participants');
+        await client.query('DELETE FROM sessions');
+        await client.query('DELETE FROM events');
         await client.query('DELETE FROM print_templates');
 
         // ******** THIS IS THE CORRECTED SECTION ********

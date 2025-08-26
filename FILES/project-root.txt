@@ -1,0 +1,32 @@
+project-root/
+├── main.js                   # Electron main process
+├── preload.js                # Electron preload for secure IPC
+├── package.json
+├── .env                      # Optional: environment variables
+├── config/                   # Persistent config files
+│   └── appConfig.json        # Stores mode, db info, etc.
+├── db/                       # Database logic and scripts
+│   ├── sqlite.js             # SQLite handler & table creation
+│   ├── mysql.js              # MySQL handler & table creation
+│   ├── postgres.js           # Postgres handler & table creation
+│   └── initTables.js         # Table creation queries for all DB types
+├── src/
+│   ├── App.jsx               # Main React App
+│   ├── index.js              # ReactDOM render
+│   ├── renderer/
+│   │   └── components/         # All your current UI components
+│   │       ├── Signin.jsx
+│   │       ├── Settings.jsx
+│   │       ├── UserDashboard.jsx
+│   │       ├── RegistrationForm.jsx
+│   │       ├── CheckInScanner.jsx
+│   │       ├── AllParticipants.jsx
+│   │       ├── ModeSelection.jsx  # NEW: UI to choose local/server
+│   │       ├── LocalDbSetup.jsx   # NEW: UI for SQLite setup
+│   │       └── ServerDbSetup.jsx  # NEW: UI for MySQL/Postgres setup
+│   └── utils/
+│       ├── dbHandler.js      # Unified DB interface (connect/query)
+│       └── storage.js        # Read/write config (appConfig.json)
+├── public/                   # React public assets
+│   └── index.html
+└── electron-builder-config.js # Optional: Electron build config

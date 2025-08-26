@@ -8,7 +8,7 @@ import {
 import EditIcon from '@mui/icons-material/Edit';
 import DeleteIcon from '@mui/icons-material/Delete';
 import RefreshIcon from '@mui/icons-material/Refresh';
-import { apiClient } from '../apiClient';
+import { apiClient } from '../api/apiClient';
 
 // A helper component to manage the content of each tab
 function TabPanel(props) {
@@ -35,24 +35,66 @@ export default function Settings({ user }) {
   // General state
   const [activeTab, setActiveTab] = useState(0);
 
-  // Sync state
-  const [events, setEvents] = useState([]);
-  const [syncLoading, setSyncLoading] = useState(true);
-  const [syncError, setSyncError] = useState('');
-
   // User management state
   const [users, setUsers] = useState([]);
   const [isUserModalOpen, setIsUserModalOpen] = useState(false);
   const [editingUser, setEditingUser] = useState(null);
-  const [userFormData, setUserFormData] = useState({ username: '', password: '', role: 'kiosk' });
+  // MODIFIED: Changed default role from 'kiosk' to 'user'
+  const [userFormData, setUserFormData] = useState({ username: '', password: '', role: 'user' });
+
+  // NEW: Database settings state
+  const [dbSettings, setDbSettings] = useState({
+    host: '',
+    port: '',
+    user: '',
+    database: '',
+    password: '' // For updating, not for display
+  });
+  const [dbLoading, setDbLoading] = useState(true);
+  const [dbStatus, setDbStatus] = useState({ message: '', severity: 'info' });
+
+  // Sync state
+  const [events, setEvents] = useState([]);
+  const [syncLoading, setSyncLoading] = useState(true);
+  const [syncError, setSyncError] = useState('');
 
   // Licensing state
   const [licenseKey, setLicenseKey] = useState('');
   const [licenseStatus, setLicenseStatus] = useState({ message: 'Enter your license key to activate the software.', severity: 'info' });
   const [licenseLoading, setLicenseLoading] = useState(false);
 
+  // --- DATA FETCHING ---
 
-  // Fetch sync status and users on component mount
+  const fetchUsers = async () => {
+    try {
+      const res = await apiClient.async_get('/users');
+      if (res.success) {
+        setUsers(res.users);
+      } else {
+        console.error("Could not fetch users:", res.message);
+      }
+    } catch (err) {
+      console.error("Error fetching users:", err);
+    }
+  };
+
+  // NEW: Function to fetch database settings
+  const fetchDbSettings = async () => {
+    setDbLoading(true);
+    // This should be a real API call. For now, we simulate it.
+    // Example: const res = await apiClient.async_get('/settings/database');
+    setTimeout(() => {
+        setDbSettings({
+            host: 'localhost',
+            port: '5432',
+            user: 'admin_user',
+            database: 'event_management_db',
+            password: '' // Password should not be sent from backend
+        });
+        setDbLoading(false);
+    }, 1000);
+  };
+
   const fetchSyncStatus = async () => {
     setSyncLoading(true);
     setSyncError('');
@@ -70,34 +112,24 @@ export default function Settings({ user }) {
     }
   };
 
-  const fetchUsers = async () => {
-    try {
-      const res = await apiClient.async_get('/users');
-      if (res.success) {
-        setUsers(res.users);
-      } else {
-        console.error("Could not fetch users:", res.message);
-      }
-    } catch (err) {
-      console.error("Error fetching users:", err);
-    }
-  };
-
   useEffect(() => {
-    fetchSyncStatus();
     fetchUsers();
+    fetchDbSettings();
+    fetchSyncStatus();
   }, []);
 
   const handleTabChange = (event, newValue) => setActiveTab(newValue);
 
-  // User management handlers (unchanged)
+  // --- USER MANAGEMENT HANDLERS ---
   const handleOpenUserModal = (userToEdit = null) => {
     if (userToEdit) {
       setEditingUser(userToEdit);
+      // MODIFIED: Changed role default to 'user' if it exists
       setUserFormData({ username: userToEdit.username, role: userToEdit.role, password: '' });
     } else {
       setEditingUser(null);
-      setUserFormData({ username: '', password: '', role: 'kiosk' });
+      // MODIFIED: Default role for new users is 'user'
+      setUserFormData({ username: '', password: '', role: 'user' });
     }
     setIsUserModalOpen(true);
   };
@@ -106,6 +138,8 @@ export default function Settings({ user }) {
   const handleUserFormChange = (e) => setUserFormData(prev => ({ ...prev, [e.target.name]: e.target.value }));
 
   const handleSaveUser = async () => {
+    // This requires backend endpoints that are currently missing.
+    // See the explanation below for the required backend code.
     let result;
     if (editingUser) {
       result = await apiClient.async_put(`/users/${editingUser.id}`, userFormData);
@@ -123,6 +157,7 @@ export default function Settings({ user }) {
 
   const handleDeleteUser = async (userId) => {
     if (window.confirm('Are you sure you want to delete this user?')) {
+      // This requires a backend endpoint that is currently missing.
       const result = await apiClient.async_delete(`/users/${userId}`);
       if (result.success) {
         fetchUsers();
@@ -132,10 +167,30 @@ export default function Settings({ user }) {
     }
   };
 
-  // License key handler
+  // --- NEW: DATABASE SETTINGS HANDLERS ---
+  const handleDbSettingsChange = (e) => {
+    setDbSettings(prev => ({...prev, [e.target.name]: e.target.value}));
+  };
+
+  const handleTestConnection = async () => {
+    setDbStatus({ message: 'Testing connection...', severity: 'info' });
+    // Simulate API call
+    setTimeout(() => {
+        setDbStatus({ message: 'Connection successful!', severity: 'success' });
+    }, 1500);
+  };
+
+  const handleSaveDbSettings = async () => {
+    setDbStatus({ message: 'Saving settings...', severity: 'info' });
+    // Simulate API call
+    setTimeout(() => {
+        setDbStatus({ message: 'Database settings saved successfully. A server restart may be required.', severity: 'success' });
+    }, 1500);
+  };
+
+  // --- LICENSE HANDLER ---
   const handleActivateLicense = () => {
     setLicenseLoading(true);
-    // In a real application, this would be an API call to your licensing server
     setTimeout(() => {
       if (licenseKey === 'PROJECTX-VALID-LICENSE-2025') {
         setLicenseStatus({ message: 'License activated successfully! All features unlocked.', severity: 'success' });
@@ -146,7 +201,6 @@ export default function Settings({ user }) {
     }, 1500);
   };
 
-  // Helper to format dates
   const formatDate = (dateStr) => {
     if (!dateStr) return 'N/A';
     return new Date(dateStr).toLocaleString('en-IN', {
@@ -156,6 +210,68 @@ export default function Settings({ user }) {
   };
 
   // --- RENDER FUNCTIONS FOR TABS ---
+
+  const renderUserManagementTab = () => (
+    <Box>
+        <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
+            <Typography variant="h5">User Management</Typography>
+            <Button variant="contained" onClick={() => handleOpenUserModal()}>Add User</Button>
+        </Box>
+        <TableContainer component={Paper}>
+            <Table>
+                <TableHead>
+                    <TableRow>
+                        <TableCell>Username</TableCell>
+                        <TableCell>Role</TableCell>
+                        <TableCell>Assigned Event</TableCell>
+                        <TableCell align="right">Actions</TableCell>
+                    </TableRow>
+                </TableHead>
+                <TableBody>
+                    {users.map((u) => (
+                        <TableRow key={u.id}>
+                            <TableCell>{u.username}</TableCell>
+                            <TableCell>{u.role}</TableCell>
+                            <TableCell>{u.assigned_event_name || 'N/A'}</TableCell>
+                            <TableCell align="right">
+                                <IconButton onClick={() => handleOpenUserModal(u)}><EditIcon /></IconButton>
+                                <IconButton onClick={() => handleDeleteUser(u.id)}><DeleteIcon /></IconButton>
+                            </TableCell>
+                        </TableRow>
+                    ))}
+                </TableBody>
+            </Table>
+        </TableContainer>
+    </Box>
+  );
+
+  // NEW: Render function for the database settings tab
+  const renderDatabaseSettingsTab = () => (
+    <Box>
+        <Typography variant="h5" gutterBottom>Database Settings</Typography>
+        <Typography variant="body2" color="text.secondary" sx={{ mb: 3 }}>
+            Configure the connection to your PostgreSQL database. Changes may require a server restart.
+        </Typography>
+        {dbLoading ? <CircularProgress /> : (
+            <Grid container spacing={3}>
+                <Grid item xs={12} md={6}><TextField name="host" label="Host" value={dbSettings.host} onChange={handleDbSettingsChange} fullWidth /></Grid>
+                <Grid item xs={12} md={6}><TextField name="port" label="Port" value={dbSettings.port} onChange={handleDbSettingsChange} fullWidth /></Grid>
+                <Grid item xs={12} md={6}><TextField name="user" label="User" value={dbSettings.user} onChange={handleDbSettingsChange} fullWidth /></Grid>
+                <Grid item xs={12} md={6}><TextField name="database" label="Database Name" value={dbSettings.database} onChange={handleDbSettingsChange} fullWidth /></Grid>
+                <Grid item xs={12}><TextField name="password" label="New Password" type="password" value={dbSettings.password} onChange={handleDbSettingsChange} helperText="Leave blank to keep the current password" fullWidth /></Grid>
+                <Grid item xs={12} sx={{ display: 'flex', gap: 2 }}>
+                    <Button variant="contained" onClick={handleSaveDbSettings}>Save Settings</Button>
+                    <Button variant="outlined" onClick={handleTestConnection}>Test Connection</Button>
+                </Grid>
+                {dbStatus.message && (
+                    <Grid item xs={12}>
+                        <Alert severity={dbStatus.severity}>{dbStatus.message}</Alert>
+                    </Grid>
+                )}
+            </Grid>
+        )}
+    </Box>
+  );
 
   const renderSynchronizationTab = () => (
     <Box>
@@ -204,38 +320,6 @@ export default function Settings({ user }) {
     </Box>
   );
 
-  const renderUserManagementTab = () => (
-    <Box>
-        <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
-            <Typography variant="h5">User Management</Typography>
-            <Button variant="contained" onClick={() => handleOpenUserModal()}>Add User</Button>
-        </Box>
-        <TableContainer component={Paper}>
-            <Table>
-                <TableHead>
-                    <TableRow>
-                        <TableCell>Username</TableCell>
-                        <TableCell>Role</TableCell>
-                        <TableCell align="right">Actions</TableCell>
-                    </TableRow>
-                </TableHead>
-                <TableBody>
-                    {users.map((u) => (
-                        <TableRow key={u.id}>
-                            <TableCell>{u.username}</TableCell>
-                            <TableCell>{u.role}</TableCell>
-                            <TableCell align="right">
-                                <IconButton onClick={() => handleOpenUserModal(u)}><EditIcon /></IconButton>
-                                <IconButton onClick={() => handleDeleteUser(u.id)}><DeleteIcon /></IconButton>
-                            </TableCell>
-                        </TableRow>
-                    ))}
-                </TableBody>
-            </Table>
-        </TableContainer>
-    </Box>
-  );
-
   const renderLicensingTab = () => (
     <Box>
         <Typography variant="h5" gutterBottom>License Information</Typography>
@@ -244,30 +328,15 @@ export default function Settings({ user }) {
         </Typography>
         <Grid container spacing={2} alignItems="center">
             <Grid item xs={12} sm={8}>
-                <TextField
-                    fullWidth
-                    label="Your License Key"
-                    variant="outlined"
-                    value={licenseKey}
-                    onChange={(e) => setLicenseKey(e.target.value)}
-                />
+                <TextField fullWidth label="Your License Key" variant="outlined" value={licenseKey} onChange={(e) => setLicenseKey(e.target.value)} />
             </Grid>
             <Grid item xs={12} sm={4}>
-                 <Button
-                    fullWidth
-                    variant="contained"
-                    size="large"
-                    onClick={handleActivateLicense}
-                    disabled={licenseLoading || !licenseKey}
-                    sx={{ height: '56px' }}
-                >
+                 <Button fullWidth variant="contained" size="large" onClick={handleActivateLicense} disabled={licenseLoading || !licenseKey} sx={{ height: '56px' }}>
                     {licenseLoading ? <CircularProgress size={24} /> : 'Activate'}
                 </Button>
             </Grid>
         </Grid>
-        <Alert severity={licenseStatus.severity} sx={{ mt: 3 }}>
-            {licenseStatus.message}
-        </Alert>
+        <Alert severity={licenseStatus.severity} sx={{ mt: 3 }}>{licenseStatus.message}</Alert>
     </Box>
   );
 
@@ -275,18 +344,22 @@ export default function Settings({ user }) {
     <Box sx={{ flexGrow: 1, bgcolor: 'background.paper', display: 'flex', height: 'calc(100vh - 110px)' }}>
         <Paper sx={{ width: '100%' }} elevation={3}>
             <AppBar position="static" color="default">
+                {/* MODIFIED: Changed tab order and added Database Settings */}
                 <Tabs value={activeTab} onChange={handleTabChange} variant="fullWidth">
-                    <Tab label="Synchronization" />
                     <Tab label="User Management" />
+                    <Tab label="Database Settings" />
+                    <Tab label="Synchronization" />
                     <Tab label="Licensing" />
                 </Tabs>
             </AppBar>
-            <TabPanel value={activeTab} index={0}>{renderSynchronizationTab()}</TabPanel>
-            <TabPanel value={activeTab} index={1}>{renderUserManagementTab()}</TabPanel>
-            <TabPanel value={activeTab} index={2}>{renderLicensingTab()}</TabPanel>
+            {/* MODIFIED: Changed panel order to match tabs */}
+            <TabPanel value={activeTab} index={0}>{renderUserManagementTab()}</TabPanel>
+            <TabPanel value={activeTab} index={1}>{renderDatabaseSettingsTab()}</TabPanel>
+            <TabPanel value={activeTab} index={2}>{renderSynchronizationTab()}</TabPanel>
+            <TabPanel value={activeTab} index={3}>{renderLicensingTab()}</TabPanel>
         </Paper>
 
-        {/* User Add/Edit Modal (Unchanged) */}
+        {/* User Add/Edit Modal */}
         <Dialog open={isUserModalOpen} onClose={handleCloseUserModal}>
             <DialogTitle>{editingUser ? 'Edit User' : 'Add New User'}</DialogTitle>
             <DialogContent>
@@ -295,8 +368,9 @@ export default function Settings({ user }) {
                 <FormControl fullWidth margin="dense" variant="standard">
                     <InputLabel>Role</InputLabel>
                     <Select name="role" value={userFormData.role} onChange={handleUserFormChange}>
+                        {/* MODIFIED: Role options updated from 'kiosk' to 'user' */}
                         <MenuItem value="admin">Admin</MenuItem>
-                        <MenuItem value="kiosk">Kiosk</MenuItem>
+                        <MenuItem value="user">User</MenuItem>
                     </Select>
                 </FormControl>
             </DialogContent>

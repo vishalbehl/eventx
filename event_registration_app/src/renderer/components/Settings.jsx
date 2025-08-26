@@ -11,6 +11,7 @@ import RefreshIcon from '@mui/icons-material/Refresh';
 import CheckCircleIcon from '@mui/icons-material/CheckCircle';
 import ErrorIcon from '@mui/icons-material/Error';
 import CloudDownloadIcon from '@mui/icons-material/CloudDownload';
+import EventAvailableIcon from '@mui/icons-material/EventAvailable';
 import Visibility from '@mui/icons-material/Visibility';
 import VisibilityOff from '@mui/icons-material/VisibilityOff';
 
@@ -43,6 +44,9 @@ export default function Settings({ onConnect, isDbConnected, onResetApp }) {
     const [activeEventId, setActiveEventId] = useState(null);
     const [showPassword, setShowPassword] = useState(false);
     const [uploadStatus, setUploadStatus] = useState({ msg: '', sev: 'info', loading: false });
+    const [activeEventDetails, setActiveEventDetails] = useState(null);
+    const [confirmResetOpen, setConfirmResetOpen] = useState(false);
+
 
     useEffect(() => {
         const loadInitialData = async () => {
@@ -50,10 +54,17 @@ export default function Settings({ onConnect, isDbConnected, onResetApp }) {
                 const savedConfig = await window.electronAPI.getConfig();
                 if (savedConfig) setConfig(savedConfig);
 
+                // Fetch details of the currently active/seeded event
                 const activeId = await window.electronAPI.getActiveEventId();
-                if (activeId) setActiveEventId(activeId);
+                if (activeId) {
+                    setActiveEventId(activeId);
+                    const eventRes = await window.electronAPI.getEventById(activeId);
+                    if (eventRes.success) {
+                        setActiveEventDetails(eventRes.event);
+                    }
+                }
                 
-                // Check if already logged in by testing stored token
+                // Check if already logged in to central server
                 const savedToken = localStorage.getItem('authToken');
                 const savedUrl = localStorage.getItem('centralServerUrl');
                 if (savedToken && savedUrl) {
@@ -263,13 +274,15 @@ export default function Settings({ onConnect, isDbConnected, onResetApp }) {
 
             if (result?.success) {
                 setSyncStatus({ 
-                    msg: `Successfully seeded event data for "${result.eventName || 'Unknown Event'}"!`, 
+                    msg: `Successfully seeded data for "${result.eventName}"! Reloading app...`, 
                     sev: 'success' 
                 });
+
+                // Automatically log out from the central server after seeding
+                handleLogout();
+
                 setTimeout(() => {
-                    if (window.confirm('Data sync complete! The application needs to reload to apply changes. Reload now?')) {
-                        window.location.reload();
-                    }
+                    window.location.reload();
                 }, 1500);
             } else {
                 throw new Error(result?.message || 'Unknown error');
@@ -408,6 +421,24 @@ export default function Settings({ onConnect, isDbConnected, onResetApp }) {
         });
 };
 
+    const handleResetEvent = async () => {
+        setConfirmResetOpen(false);
+        setSyncLoading(true);
+        setSyncStatus({ msg: 'Resetting kiosk and clearing active event...', sev: 'info' });
+        try {
+            await window.electronAPI.resetActiveEvent();
+            // A full app reload is safest to ensure all states are cleared
+            if (window.confirm('Kiosk reset! The application will now reload to allow selection of a new event.')) {
+                window.location.reload();
+            }
+        } catch (err) {
+            setSyncStatus({ msg: `Reset failed: ${err.message}`, sev: 'error' });
+        } finally {
+            setSyncLoading(false);
+        }
+    };
+
+
     return (
         <Box>
             <AppBar position="static" color="default">
@@ -526,251 +557,303 @@ export default function Settings({ onConnect, isDbConnected, onResetApp }) {
             </TabPanel>
 
             <TabPanel value={activeTab} index={1}>
+                {/* --- DATA SYNCHRONIZATION TAB --- */}
                 <Typography variant="h5" gutterBottom>Data Synchronization</Typography>
-                <Alert severity={syncStatus.sev} sx={{ mb: 2 }}>{syncStatus.msg}</Alert>
-                {!isLoggedIn ? (
-                    <Paper variant="outlined" sx={{ p: 2 }}>
-                        <Typography variant="h6" gutterBottom>Connect to Central Server</Typography>
-                        {loginError && <Alert severity="error" sx={{ mb: 2 }}>{loginError}</Alert>}
-                        
-                        {/* Connection Test Section */}
-                        <Box sx={{ mb: 2 }}>
-                            <TextField 
-                                label="Central Server URL" 
-                                fullWidth 
-                                value={centralUrl} 
-                                onChange={(e) => setCentralUrl(e.target.value)}
-                                placeholder="http://localhost:3001"
-                                helperText="Enter the URL of your central event management server"
-                            />
-                            <Box sx={{ mt: 1, display: 'flex', alignItems: 'center', gap: 2 }}>
-                                <Button 
-                                    variant="outlined" 
-                                    size="small" 
-                                    onClick={testCentralServerConnection}
-                                    disabled={!centralUrl.trim() || connectionStatus?.loading}
-                                >
-                                    {connectionStatus?.loading ? <CircularProgress size={16} /> : 'Test Connection'}
-                                </Button>
-                                {connectionStatus && !connectionStatus.loading && (
-                                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                                        {connectionStatus.success ? (
-                                            <>
-                                                <CheckCircleIcon color="success" fontSize="small" />
-                                                <Typography variant="body2" color="success.main">
-                                                    Connected
-                                                </Typography>
-                                            </>
-                                        ) : (
-                                            <>
-                                                <ErrorIcon color="error" fontSize="small" />
-                                                <Typography variant="body2" color="error.main">
-                                                    {connectionStatus.message}
-                                                </Typography>
-                                            </>
-                                        )}
-                                    </Box>
-                                )}
-                            </Box>
-                        </Box>
-
-                        <Divider sx={{ my: 2 }} />
-
-                        {/* Login Form */}
-                        <Typography variant="subtitle1" gutterBottom>Server Administrator Login</Typography>
-                        <TextField 
-                            name="username" 
-                            label="Admin Username" 
-                            value={loginForm.username}
-                            onChange={handleLoginChange} 
-                            fullWidth 
-                            sx={{ mb: 1 }} 
-                            autoComplete="username"
-                        />
-                        <TextField 
-                            name="password" 
-                            label="Admin Password" 
-                            type="password" 
-                            value={loginForm.password}
-                            onChange={handleLoginChange} 
-                            fullWidth 
-                            sx={{ mb: 2 }} 
-                            autoComplete="current-password"
-                        />
-                        <Button 
-                            onClick={handleOnlineLogin} 
-                            variant="contained" 
-                            disabled={syncLoading || !loginForm.username || !loginForm.password || !centralUrl.trim()}
-                            fullWidth
-                            size="large"
-                        >
-                            {syncLoading ? (
-                                <>
-                                    <CircularProgress size={20} sx={{ mr: 1 }} />
-                                    Connecting...
-                                </>
-                            ) : (
-                                'Login & Fetch Events'
-                            )}
-                        </Button>
-                    </Paper>
-                ) : (
-                    <Paper variant="outlined" sx={{ p: 2 }}>
-                        <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
-                            <Typography variant="h6">Available Events from Central Server</Typography>
-                            <Box>
-                                <Button 
-                                    startIcon={<RefreshIcon />} 
-                                    onClick={handleRefreshEvents} 
-                                    disabled={syncLoading}
-                                    sx={{ mr: 1 }}
-                                    size="small"
-                                >
-                                    Refresh
-                                </Button>
-                                <Button 
-                                    variant="outlined" 
-                                    color="secondary" 
-                                    onClick={handleLogout}
-                                    size="small"
-                                >
-                                    Logout
-                                </Button>
-                            </Box>
-                        </Box>
-
-                        {availableEvents.length === 0 ? (
-                            <Alert severity="warning">
-                                No events found on the central server. Make sure events are properly configured in your central system.
-                            </Alert>
-                        ) : (
-                            <>
-                                <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-                                    Found {availableEvents.length} event{availableEvents.length !== 1 ? 's' : ''} available for download
+                
+                {activeEventDetails ? (
+                    // --- 1. DISPLAY CURRENTLY ACTIVE EVENT ---
+                    <Box>
+                        <Alert severity="success" sx={{ mb: 2 }}>
+                            This kiosk is configured for the following event. All new data is being saved for this event.
+                        </Alert>
+                        <Card variant="outlined">
+                            <CardContent>
+                                <Typography gutterBottom variant="h6" component="div">
+                                    <EventAvailableIcon sx={{ verticalAlign: 'middle', mr: 1 }}/>
+                                    {activeEventDetails.name}
                                 </Typography>
-
-                                <FormControl fullWidth sx={{ mb: 2 }}>
-                                    <InputLabel>Select Event to Download</InputLabel>
-                                    <Select 
-                                        value={selectedEventId} 
-                                        onChange={(e) => handleEventSelection(e.target.value)}
-                                        label="Select Event to Download"
+                                <Typography variant="body2" color="text.secondary">
+                                    {activeEventDetails.description}
+                                </Typography>
+                                <Typography variant="body2" sx={{ mt: 1 }}>
+                                    <strong>Organizer:</strong> {activeEventDetails.organiser_name}
+                                </Typography>
+                                <Typography variant="body2">
+                                    <strong>Dates:</strong> {new Date(activeEventDetails.start_date).toLocaleDateString()} - {new Date(activeEventDetails.end_date).toLocaleDateString()}
+                                </Typography>
+                            </CardContent>
+                        </Card>
+                        
+                        <Paper sx={{ p: 2, mt: 4, border: '1px solid', borderColor: 'error.main' }}>
+                            <Typography variant="h6" color="error" gutterBottom>Reset Kiosk</Typography>
+                            <Typography variant="body2" sx={{ mb: 2 }}>
+                                To load a different event, you must first reset this kiosk. **Warning:** This will delete all participants, check-ins, and other data currently stored in this kiosk's database. This action cannot be undone.
+                            </Typography>
+                            <Button
+                                variant="contained"
+                                color="error"
+                                onClick={() => setConfirmResetOpen(true)}
+                                disabled={syncLoading}
+                            >
+                                {syncLoading ? <CircularProgress size={24} /> : 'Reset Kiosk & Change Event'}
+                            </Button>
+                            {config?.mode === 'local' && (
+                                <Paper variant="outlined" sx={{ p: 2, mt: 4 }}>
+                                    <Typography variant="h6" gutterBottom>Upload Local Data</Typography>
+                                    <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+                                        If this kiosk has been used offline, you can upload new registrations and check-ins to the central server. You must be logged in to the central server to perform this action.
+                                    </Typography>
+                                    
+                                    {uploadStatus.msg && (
+                                        <Alert severity={uploadStatus.sev} sx={{ mb: 2 }}>{uploadStatus.msg}</Alert>
+                                    )}
+                                    
+                                    <Button
+                                        variant="contained"
+                                        color="success"
+                                        onClick={handleUpload}
+                                        disabled={uploadStatus.loading || !isLoggedIn}
                                     >
-                                        {availableEvents.map(event => (
-                                            <MenuItem key={event.id} value={event.id}>
-                                                <Box sx={{ width: '100%' }}>
-                                                    <Typography variant="subtitle1">{event.name}</Typography>
-                                                    <Typography variant="caption" color="text.secondary" display="block">
-                                                        {event.start_date && event.end_date ? 
-                                                            `${new Date(event.start_date).toLocaleDateString()} - ${new Date(event.end_date).toLocaleDateString()}` :
-                                                            'Date not specified'
-                                                        }
-                                                    </Typography>
-                                                    {event.organiser_name && (
-                                                        <Typography variant="caption" color="text.secondary" display="block">
-                                                            Organized by: {event.organiser_name}
-                                                        </Typography>
-                                                    )}
-                                                </Box>
-                                            </MenuItem>
-                                        ))}
-                                    </Select>
-                                </FormControl>
+                                        {uploadStatus.loading ? <CircularProgress size={24}/> : 'Upload Local Changes to Server'}
+                                    </Button>
+                                </Paper>
+                            )}
 
-                                {selectedEvent && (
-                                    <Card sx={{ mb: 2 }} elevation={1}>
-                                        <CardContent>
-                                            <Typography variant="h6" gutterBottom color="primary">
-                                                {selectedEvent.name}
-                                            </Typography>
-                                            {selectedEvent.description && (
-                                                <Typography variant="body2" color="text.secondary" paragraph>
-                                                    {selectedEvent.description}
-                                                </Typography>
-                                            )}
-                                            <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap', mb: 1 }}>
-                                                {selectedEvent.start_date && (
-                                                    <Chip 
-                                                        label={`Start: ${new Date(selectedEvent.start_date).toLocaleDateString()}`} 
-                                                        size="small" 
-                                                        variant="outlined"
-                                                    />
-                                                )}
-                                                {selectedEvent.end_date && (
-                                                    <Chip 
-                                                        label={`End: ${new Date(selectedEvent.end_date).toLocaleDateString()}`} 
-                                                        size="small" 
-                                                        variant="outlined"
-                                                    />
-                                                )}
-                                                {selectedEvent.organiser_name && (
-                                                    <Chip 
-                                                        label={`Organizer: ${selectedEvent.organiser_name}`} 
-                                                        size="small" 
-                                                        variant="outlined"
-                                                        color="secondary"
-                                                    />
+                        </Paper>
+                    </Box>
+                ) : (
+                    // --- 2. SHOW SEEDING CONTROLS if no event is active ---
+                    <Box>
+                        <Paper variant="outlined" sx={{ p: 2, mb: 2 }}>
+                            <Alert severity={syncStatus.sev || 'info'} sx={{ mb: 2 }}>
+                                {syncStatus.msg || 'This kiosk is not yet configured. Please log in to the central server to download event data.'}
+                            </Alert>
+                        </Paper>
+
+                        {!isLoggedIn ? (
+                            <Paper variant="outlined" sx={{ p: 2 }}>
+                                <Typography variant="h6" gutterBottom>Connect to Central Server</Typography>
+                                {loginError && <Alert severity="error" sx={{ mb: 2 }}>{loginError}</Alert>}
+                                
+                                {/* Connection Test Section */}
+                                <Box sx={{ mb: 2 }}>
+                                    <TextField 
+                                        label="Central Server URL" 
+                                        fullWidth 
+                                        value={centralUrl} 
+                                        onChange={(e) => setCentralUrl(e.target.value)}
+                                        placeholder="http://localhost:3001"
+                                        helperText="Enter the URL of your central event management server"
+                                    />
+                                    <Box sx={{ mt: 1, display: 'flex', alignItems: 'center', gap: 2 }}>
+                                        <Button 
+                                            variant="outlined" 
+                                            size="small" 
+                                            onClick={testCentralServerConnection}
+                                            disabled={!centralUrl.trim() || connectionStatus?.loading}
+                                        >
+                                            {connectionStatus?.loading ? <CircularProgress size={16} /> : 'Test Connection'}
+                                        </Button>
+                                        {connectionStatus && !connectionStatus.loading && (
+                                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                                                {connectionStatus.success ? (
+                                                    <>
+                                                        <CheckCircleIcon color="success" fontSize="small" />
+                                                        <Typography variant="body2" color="success.main">
+                                                            Connected
+                                                        </Typography>
+                                                    </>
+                                                ) : (
+                                                    <>
+                                                        <ErrorIcon color="error" fontSize="small" />
+                                                        <Typography variant="body2" color="error.main">
+                                                            {connectionStatus.message}
+                                                        </Typography>
+                                                    </>
                                                 )}
                                             </Box>
-                                            {selectedEvent.organiser_email && (
-                                                <Typography variant="caption" display="block" color="text.secondary">
-                                                    Contact: {selectedEvent.organiser_email}
-                                                    {selectedEvent.organiser_phone && ` • ${selectedEvent.organiser_phone}`}
-                                                </Typography>
-                                            )}
-                                        </CardContent>
-                                    </Card>
-                                )}
+                                        )}
+                                    </Box>
+                                </Box>
 
+                                <Divider sx={{ my: 2 }} />
+
+                                {/* Login Form */}
+                                <Typography variant="subtitle1" gutterBottom>Server Administrator Login</Typography>
+                                <TextField 
+                                    name="username" 
+                                    label="Admin Username" 
+                                    value={loginForm.username}
+                                    onChange={handleLoginChange} 
+                                    fullWidth 
+                                    sx={{ mb: 1 }} 
+                                    autoComplete="username"
+                                />
+                                <TextField 
+                                    name="password" 
+                                    label="Admin Password" 
+                                    type="password" 
+                                    value={loginForm.password}
+                                    onChange={handleLoginChange} 
+                                    fullWidth 
+                                    sx={{ mb: 2 }} 
+                                    autoComplete="current-password"
+                                />
                                 <Button 
-                                    onClick={handleSeed} 
+                                    onClick={handleOnlineLogin} 
                                     variant="contained" 
-                                    color="success" 
-                                    size="large"
+                                    disabled={syncLoading || !loginForm.username || !loginForm.password || !centralUrl.trim()}
                                     fullWidth
-                                    disabled={syncLoading || !selectedEventId}
-                                    sx={{ mt: 2 }}
-                                    startIcon={<CloudDownloadIcon />}
+                                    size="large"
                                 >
                                     {syncLoading ? (
                                         <>
                                             <CircularProgress size={20} sx={{ mr: 1 }} />
-                                            Downloading Event Data...
+                                            Connecting...
                                         </>
                                     ) : (
-                                        'Download & Seed Database'
+                                        'Login & Fetch Events'
                                     )}
                                 </Button>
+                            </Paper>
+                        ) : (
+                            <Paper variant="outlined" sx={{ p: 2 }}>
+                                <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
+                                    <Typography variant="h6">Available Events from Central Server</Typography>
+                                    <Box>
+                                        <Button 
+                                            startIcon={<RefreshIcon />} 
+                                            onClick={handleRefreshEvents} 
+                                            disabled={syncLoading}
+                                            sx={{ mr: 1 }}
+                                            size="small"
+                                        >
+                                            Refresh
+                                        </Button>
+                                        <Button 
+                                            variant="outlined" 
+                                            color="secondary" 
+                                            onClick={handleLogout}
+                                            size="small"
+                                        >
+                                            Logout
+                                        </Button>
+                                    </Box>
+                                </Box>
 
-                                {selectedEventId && (
-                                    <Typography variant="body2" color="text.secondary" sx={{ mt: 1, textAlign: 'center' }}>
-                                        This will download all participants, sessions, and event configuration data.
-                                    </Typography>
+                                {availableEvents.length === 0 ? (
+                                    <Alert severity="warning">
+                                        No events found on the central server. Make sure events are properly configured in your central system.
+                                    </Alert>
+                                ) : (
+                                    <>
+                                        <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+                                            Found {availableEvents.length} event{availableEvents.length !== 1 ? 's' : ''} available for download
+                                        </Typography>
+
+                                        <FormControl fullWidth sx={{ mb: 2 }}>
+                                            <InputLabel>Select Event to Download</InputLabel>
+                                            <Select 
+                                                value={selectedEventId} 
+                                                onChange={(e) => handleEventSelection(e.target.value)}
+                                                label="Select Event to Download"
+                                            >
+                                                {availableEvents.map(event => (
+                                                    <MenuItem key={event.id} value={event.id}>
+                                                        <Box sx={{ width: '100%' }}>
+                                                            <Typography variant="subtitle1">{event.name}</Typography>
+                                                            <Typography variant="caption" color="text.secondary" display="block">
+                                                                {event.start_date && event.end_date ? 
+                                                                    `${new Date(event.start_date).toLocaleDateString()} - ${new Date(event.end_date).toLocaleDateString()}` :
+                                                                    'Date not specified'
+                                                                }
+                                                            </Typography>
+                                                            {event.organiser_name && (
+                                                                <Typography variant="caption" color="text.secondary" display="block">
+                                                                    Organized by: {event.organiser_name}
+                                                                </Typography>
+                                                            )}
+                                                        </Box>
+                                                    </MenuItem>
+                                                ))}
+                                            </Select>
+                                        </FormControl>
+
+                                        {selectedEvent && (
+                                            <Card sx={{ mb: 2 }} elevation={1}>
+                                                <CardContent>
+                                                    <Typography variant="h6" gutterBottom color="primary">
+                                                        {selectedEvent.name}
+                                                    </Typography>
+                                                    {selectedEvent.description && (
+                                                        <Typography variant="body2" color="text.secondary" paragraph>
+                                                            {selectedEvent.description}
+                                                        </Typography>
+                                                    )}
+                                                    <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap', mb: 1 }}>
+                                                        {selectedEvent.start_date && (
+                                                            <Chip 
+                                                                label={`Start: ${new Date(selectedEvent.start_date).toLocaleDateString()}`} 
+                                                                size="small" 
+                                                                variant="outlined"
+                                                            />
+                                                        )}
+                                                        {selectedEvent.end_date && (
+                                                            <Chip 
+                                                                label={`End: ${new Date(selectedEvent.end_date).toLocaleDateString()}`} 
+                                                                size="small" 
+                                                                variant="outlined"
+                                                            />
+                                                        )}
+                                                        {selectedEvent.organiser_name && (
+                                                            <Chip 
+                                                                label={`Organizer: ${selectedEvent.organiser_name}`} 
+                                                                size="small" 
+                                                                variant="outlined"
+                                                                color="secondary"
+                                                            />
+                                                        )}
+                                                    </Box>
+                                                    {selectedEvent.organiser_email && (
+                                                        <Typography variant="caption" display="block" color="text.secondary">
+                                                            Contact: {selectedEvent.organiser_email}
+                                                            {selectedEvent.organiser_phone && ` • ${selectedEvent.organiser_phone}`}
+                                                        </Typography>
+                                                    )}
+                                                </CardContent>
+                                            </Card>
+                                        )}
+
+                                        <Button 
+                                            onClick={handleSeed} 
+                                            variant="contained" 
+                                            color="success" 
+                                            size="large"
+                                            fullWidth
+                                            disabled={syncLoading || !selectedEventId}
+                                            sx={{ mt: 2 }}
+                                            startIcon={<CloudDownloadIcon />}
+                                        >
+                                            {syncLoading ? (
+                                                <>
+                                                    <CircularProgress size={20} sx={{ mr: 1 }} />
+                                                    Downloading Event Data...
+                                                </>
+                                            ) : (
+                                                'Download & Seed Database'
+                                            )}
+                                        </Button>
+
+                                        {selectedEventId && (
+                                            <Typography variant="body2" color="text.secondary" sx={{ mt: 1, textAlign: 'center' }}>
+                                                This will download all participants, sessions, and event configuration data.
+                                            </Typography>
+                                        )}
+                                    </>
                                 )}
-                            </>
+                            </Paper>
                         )}
-                    </Paper>
-                )}
-                {config?.mode === 'local' && (
-                <Paper variant="outlined" sx={{ p: 2, mt: 4 }}>
-                    <Typography variant="h6" gutterBottom>Upload Local Data</Typography>
-                    <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-                        If this kiosk has been used offline, you can upload new registrations and check-ins to the central server. You must be logged in to the central server to perform this action.
-                    </Typography>
-                    
-                    {uploadStatus.msg && (
-                        <Alert severity={uploadStatus.sev} sx={{ mb: 2 }}>{uploadStatus.msg}</Alert>
-                    )}
-                    
-                    <Button
-                        variant="contained"
-                        color="success"
-                        onClick={handleUpload}
-                        disabled={uploadStatus.loading || !isLoggedIn}
-                    >
-                        {uploadStatus.loading ? <CircularProgress size={24}/> : 'Upload Local Changes to Server'}
-                    </Button>
-                </Paper>
+                    </Box>
                 )}
             </TabPanel>
 
@@ -927,6 +1010,20 @@ export default function Settings({ onConnect, isDbConnected, onResetApp }) {
                     </Button>
                 </DialogActions>
             </Dialog>
+
+            <Dialog open={confirmResetOpen} onClose={() => setConfirmResetOpen(false)}>
+                <DialogTitle>Are you absolutely sure?</DialogTitle>
+                <DialogContent>
+                    <Typography>
+                        This will prepare the kiosk for a new event, but it requires wiping all current local data (participants, check-ins, etc.). This action cannot be recovered.
+                    </Typography>
+                </DialogContent>
+                <DialogActions>
+                    <Button onClick={() => setConfirmResetOpen(false)}>Cancel</Button>
+                    <Button onClick={handleResetEvent} color="error">Yes, Reset and Delete Data</Button>
+                </DialogActions>
+            </Dialog>
+
         </Box>
     );
 }

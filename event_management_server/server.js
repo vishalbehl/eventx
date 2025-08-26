@@ -13,6 +13,7 @@ const app = express();
 const PORT = process.env.PORT || 3001;
 // Use the AUTH_SECRET from the .env file
 const AUTH_SECRET = process.env.AUTH_SECRET;
+const roleCodeMap = { 'Delegate': 'DEL', 'Faculty': 'FAC', 'Organizer': 'ORG', 'Crew': 'CRW', 'VIP': 'VIP' };
 
 // =================================================================
 // MIDDLEWARE
@@ -61,8 +62,6 @@ const getEventIdForRequest = (req) => {
 
     return req.user.assignedEventId;
 };
-
-
 
 // =================================================================
 // AUTH ROUTES
@@ -124,6 +123,7 @@ app.get('/api/status', (req, res) => {
         timestamp: new Date().toISOString()
     });
 });
+
 app.get('/api/health', (req, res) => {
     res.json({ success: true, message: 'Central server running' });
 });
@@ -146,7 +146,6 @@ app.get('/api/events', authMiddleware, async (req, res, next) => {
         next(err);
     }
 });
-
 
 app.post('/api/events',
     authMiddleware,
@@ -225,6 +224,51 @@ app.get('/api/users', authMiddleware, adminOnly, async (req, res, next) => {
     }
 });
 
+// NEW: Route to create a new user
+app.post('/api/users',
+    authMiddleware,
+    adminOnly,
+    body('username').isString().notEmpty().withMessage('Username is required.'),
+    body('password').isLength({ min: 6 }).withMessage('Password must be at least 6 characters long.'),
+    body('role').isIn(['admin', 'user']).withMessage('Role must be either admin or user.'),
+    async (req, res, next) => {
+        const errors = validationResult(req);
+        if (!errors.isEmpty()) {
+            return res.status(400).json({ success: false, errors: errors.array() });
+        }
+        try {
+            const { username, password, role } = req.body;
+            const user = await db.createUser(username, password, role);
+            res.status(201).json({ success: true, user });
+        } catch (err) {
+            // Handle cases where username might already exist
+            if (err.code === '23505') {
+                return res.status(409).json({ success: false, message: 'Username already exists.' });
+            }
+            next(err);
+        }
+    }
+);
+
+
+// NEW: Route to delete a user
+app.delete('/api/users/:id', authMiddleware, adminOnly, async (req, res, next) => {
+    try {
+        const userId = parseInt(req.params.id, 10);
+        // Optional: Add a check to prevent users from deleting themselves
+        if (req.user.userId === userId) {
+            return res.status(400).json({ success: false, message: 'You cannot delete your own account.' });
+        }
+        const result = await db.deleteUser(userId);
+        if (result.changes === 0) {
+            return res.status(404).json({ success: false, message: 'User not found' });
+        }
+        res.json({ success: true, message: 'User deleted successfully' });
+    } catch (err) {
+        next(err);
+    }
+});
+
 /* =====================
    PARTICIPANT ROUTES
 ===================== */
@@ -251,7 +295,6 @@ app.get('/api/participants', authMiddleware, async (req, res) => {
     }
 });
 
-const roleCodeMap = { 'Delegate': 'DEL', 'Faculty': 'FAC', 'Organizer': 'ORG', 'Crew': 'CRW', 'VIP': 'VIP' };
 app.post('/api/participants/bulk', authMiddleware, async (req, res) => {
     const eventId = getEventIdForRequest(req);
     const { participants } = req.body;
@@ -326,6 +369,70 @@ app.get('/api/participants/byIds', authMiddleware, async (req, res) => {
     }
 });
 
+/* =================================
+   VENUE ROUTES (NEW)
+================================= */
+app.get('/api/events/:eventId/venues', authMiddleware, adminOnly, async (req, res, next) => {
+    try {
+        const venues = await db.getVenuesForEvent(req.params.eventId);
+        res.json({ success: true, venues });
+    } catch (err) { next(err); }
+});
+
+app.post('/api/events/:eventId/venues', authMiddleware, adminOnly, async (req, res, next) => {
+    try {
+        const payload = { ...req.body, event_id: req.params.eventId };
+        const venue = await db.addVenue(payload);
+        res.status(201).json({ success: true, venue });
+    } catch (err) { next(err); }
+});
+
+app.put('/api/venues/:venueId', authMiddleware, adminOnly, async (req, res, next) => {
+    try {
+        const venue = await db.updateVenue(req.params.venueId, req.body);
+        res.json({ success: true, venue });
+    } catch (err) { next(err); }
+});
+
+app.delete('/api/venues/:venueId', authMiddleware, adminOnly, async (req, res, next) => {
+    try {
+        await db.deleteVenue(req.params.venueId);
+        res.json({ success: true, message: 'Venue deleted.' });
+    } catch (err) { next(err); }
+});
+
+/* =================================
+   HALL ROUTES (NEW)
+================================= */
+app.get('/api/events/:eventId/halls', authMiddleware, adminOnly, async (req, res, next) => {
+    try {
+        const halls = await db.getHallsForEvent(req.params.eventId);
+        res.json({ success: true, halls });
+    } catch (err) { next(err); }
+});
+
+app.post('/api/events/:eventId/halls', authMiddleware, adminOnly, async (req, res, next) => {
+    try {
+        const payload = { ...req.body, event_id: req.params.eventId };
+        const hall = await db.addHall(payload);
+        res.status(201).json({ success: true, hall });
+    } catch (err) { next(err); }
+});
+
+app.put('/api/halls/:hallId', authMiddleware, adminOnly, async (req, res, next) => {
+    try {
+        const hall = await db.updateHall(req.params.hallId, req.body);
+        res.json({ success: true, hall });
+    } catch (err) { next(err); }
+});
+
+app.delete('/api/halls/:hallId', authMiddleware, adminOnly, async (req, res, next) => {
+    try {
+        await db.deleteHall(req.params.hallId);
+        res.json({ success: true, message: 'Hall deleted.' });
+    } catch (err) { next(err); }
+});
+
 /* =====================
    SESSION ROUTES
 ===================== */
@@ -335,8 +442,8 @@ app.get('/api/participants/byIds', authMiddleware, async (req, res) => {
  */
 app.post('/api/sessions', authMiddleware, adminOnly, async (req, res) => {
     try {
-        const { eventId, session_date, name, max_checkins } = req.body;
-        const newSession = await db.addSession(eventId, session_date, name, max_checkins);
+        const { eventId, session_date, name, max_checkins, hall_id, allowed_roles } = req.body;
+        const newSession = await db.addSession(eventId, session_date, name, max_checkins, hall_id, allowed_roles);
         res.status(201).json({ success: true, session: newSession });
     } catch (err) {
         res.status(400).json({ success: false, message: err.message });
@@ -348,8 +455,8 @@ app.post('/api/sessions', authMiddleware, adminOnly, async (req, res) => {
  */
 app.put('/api/sessions/:id', authMiddleware, adminOnly, async (req, res) => {
     try {
-        const { name, session_date, max_checkins } = req.body;
-        const updatedSession = await db.updateSession(req.params.id, name, session_date, max_checkins);
+        const { name, session_date, max_checkins, hall_id, allowed_roles } = req.body;
+        const updatedSession = await db.updateSession(req.params.id, name, session_date, max_checkins, hall_id, allowed_roles);
         res.json({ success: true, session: updatedSession });
     } catch (err) {
         res.status(400).json({ success: false, message: err.message });
@@ -366,24 +473,44 @@ app.delete('/api/sessions/:id', authMiddleware, adminOnly, async (req, res) => {
 });
 
 app.post('/api/sessions/bulk', authMiddleware, adminOnly, async (req, res) => {
+  const eventId = getEventIdForRequest(req);
+  if (!eventId) {
+    return res.status(400).json({ success: false, message: "Admin must specify an eventId for this operation." });
+  }
+
+  const { sessions } = req.body;
+  const inserted = [];
+  const errors = [];
+
+  console.log("🚀 Bulk upload request for eventId:", eventId);
+  console.log("🚀 Incoming sessions:", sessions);
+
+  for (let s of sessions) {
     try {
-        const eventId = getEventIdForRequest(req);
-        const { sessions } = req.body;
-        if (!Array.isArray(sessions)) return res.status(400).json({ success: false, message: 'Request body must be an array of sessions.' });
-        const results = { inserted: [], errors: [] };
-        for (const s of sessions) {
-            try {
-                if (!s.name || !s.date) throw new Error("Missing name or date");
-                const newSession = await db.addSession(eventId, s.date, s.name);
-                results.inserted.push(newSession);
-            } catch(err) {
-                results.errors.push({ session: s, error: err.message });
-            }
-        }
-        res.json({ success: true, result: results });
+        const newSession = await db.addSession(
+        eventId,
+        s.date,
+        s.name,
+        s.max_checkins || 1,
+        s.hall_id || null,
+        s.allowed_roles && s.allowed_roles.length ? s.allowed_roles : ['All']  // <-- pass array
+        );
+
+
+      if (newSession) {
+        // console.log("✅ Inserted session:", newSession);
+        inserted.push(newSession);
+      } else {
+        // console.warn("⚠️ addSession returned null for:", s);
+        errors.push({ session: s, reason: "addSession returned null" });
+      }
     } catch (err) {
-        res.status(500).json({ success: false, message: err.message });
+    //   console.error("❌ Failed to insert session:", s, err.message);
+      errors.push({ session: s, reason: err.message });
     }
+  }
+
+  res.json({ success: true, result: { inserted, errors } });
 });
 
 app.get('/api/sessions', authMiddleware, async(req, res) => {
@@ -566,7 +693,6 @@ app.post('/api/kiosks/assign-event', authMiddleware, adminOnly, async (req, res)
     }
 });
 
-
 /* =================================================================
    KIOSK SYNC ROUTES (NEW)
 ================================================================= */
@@ -629,6 +755,35 @@ app.post('/api/sync/upload', authMiddleware, async (req, res, next) => {
     } catch (err) {
         // Pass any database or other errors to the central error handler
         next(err);
+    }
+});
+
+/* =====================
+   TICKETING MATRIX ROUTES (for a specific event)
+===================== */
+
+// GETs the current pricing matrix for an event
+app.get('/api/events/:eventId/pricing', authMiddleware, adminOnly, async (req, res, next) => {
+    try {
+        const pricing = await db.getEventPricing(req.params.eventId);
+        res.json({ success: true, pricing });
+    } catch (err) { 
+        next(err); 
+    }
+});
+
+// POSTs the entire updated pricing matrix for saving
+app.post('/api/events/:eventId/pricing', authMiddleware, adminOnly, async (req, res, next) => {
+    try {
+        // The pricingData object is sent in the request body
+        const { pricingData } = req.body; 
+        if (pricingData === undefined) {
+            return res.status(400).json({ success: false, message: 'Request body must contain pricingData object.' });
+        }
+        await db.saveEventPricing(req.params.eventId, pricingData);
+        res.json({ success: true, message: 'Pricing matrix saved successfully.' });
+    } catch (err) { 
+        next(err); 
     }
 });
 

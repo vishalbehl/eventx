@@ -1,0 +1,35 @@
+src/
+├── main/
+│   ├── config.json
+│   ├── main.js       # The entry point for the Electron app
+│   ├── preload.js    # Script to bridge the main and renderer processes
+│   ├── qrService.js
+│   └── scannerService.js
+└── renderer/
+    ├── api/              // NEW FOLDER 📡 (Good practice to group API logic)
+    │   └── apiClient.js  // MOVED from renderer root
+    ├── assets/           // NEW FOLDER 🖼️
+    │   └── css/
+    │       └── index.css // NEW ✨ (For Tailwind directives and custom CSS)
+    ├── components/       // For small, reusable UI components
+    │   ├── Button.jsx    // NEW ✨
+    │   ├── Card.jsx      // NEW ✨
+    │   ├── Chip.jsx      // NEW ✨
+    │   ├── Input.jsx     // NEW ✨
+    │   └── KpiCard.jsx   // NEW ✨ (Specific for the dashboard)
+    ├── layout/           // NEW FOLDER 🏗️
+    │   ├── AppLayout.jsx // NEW ✨ (The main layout with sidebar/header)
+    │   ├── Header.jsx    // NEW ✨
+    │   └── Sidebar.jsx   // NEW ✨
+    ├── pages/            // NEW FOLDER 📄 (For top-level page components)
+    │   ├── Dashboard.jsx // REPLACES AdminDashboard.jsx	
+    │   ├── AddEvent.jsx
+    │   ├── EditEvent.jsx
+    │   ├── EventView.jsx
+    │   ├── PrintDesigner.jsx
+    │   ├── Reports.jsx
+    │   ├── Settings.jsx
+    │   ├── Signin.jsx
+    │   └── XlsxUploader.jsx
+    ├── App.jsx           // MODIFIED 🎨 (To include routing and the new layout)
+    └── index.js          // MODIFIED 🎨 (To import the new CSS file)
