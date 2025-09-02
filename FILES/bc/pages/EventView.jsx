@@ -155,16 +155,16 @@ export default function EventView({ user }) {
                             <Box sx={{ flexGrow: 1, my: 2 }} />
                             <Box sx={{ display: 'flex', gap: 1, justifyContent: 'center', mt: 'auto' }}>
                                 <Button component={Link} to={`/events/edit/${event.id}`} variant="outlined" size="small">Edit</Button>
-                                {/* <Button variant="outlined" size="small" onClick={() => handleAudit(event)}>Audit</Button> */}
+                                <Button variant="outlined" size="small" onClick={() => handleAudit(event)}>Audit</Button>
                                 <Button variant="outlined" size="small" color="error" onClick={() => setConfirmDelete(event)}>
                                     Delete
                                 </Button>
                             </Box>
                             <Box sx={{ flexGrow: 1, my: 1 }} />
                             <Box sx={{ display: 'flex', gap: 1, justifyContent: 'center', mt: 'auto' }}>
-                                {/* <Button variant="contained" size="small" startIcon={<SendToMobileIcon />} onClick={() => handleOpenPushModal(event)}>
+                                <Button variant="contained" size="small" startIcon={<SendToMobileIcon />} onClick={() => handleOpenPushModal(event)}>
                                     Push to Kiosk
-                                </Button> */}
+                                </Button>
                             </Box>
                         </Paper>
                     </Grid>
